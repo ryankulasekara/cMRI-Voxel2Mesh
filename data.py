@@ -1,6 +1,9 @@
 import os
 import nrrd
 import numpy as np
+from skimage.measure import marching_cubes
+from sklearn.neighbors import NearestNeighbors
+
 from config import *
 
 
@@ -118,3 +121,33 @@ def preprocess(image, seg=False, target_size=NRRD_DIMENSIONS):
         seg_image = padded_image[SEG_LABEL, :, :, :]
 
         return seg_image
+
+
+def extract_surface_points(voxel_data, threshold=0.5, num_points=NUM_POINTS):
+    """
+    Takes in the data from the labeled seg nrrd and returns a mesh representation of the voxels
+
+    :param voxel_data: labels
+    :param threshold: 0 -> 0, 1 -> 1
+    :param num_points: number of points to extract (should match template mesh)
+    :return: mesh representation of the voxels
+    """
+
+    surface_points = []
+
+    # iterate through each volume
+    for i in range(voxel_data.shape[0]):
+        # Select the current volume
+        volume = voxel_data[i]
+
+        # apply threshold to create a binary mask for the volume
+        surface_voxels = volume > threshold
+
+        # extract surface points using marching cubes
+        vertices, faces, _, _ = marching_cubes(surface_voxels, level=threshold)
+        nbrs = NearestNeighbors(n_neighbors=1, algorithm='auto').fit(vertices)
+        _, indices = nbrs.kneighbors(np.random.rand(num_points, 3))
+        resampled_points = vertices[indices.flatten()]
+        surface_points.append(resampled_points)
+
+    return np.array(surface_points)

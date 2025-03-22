@@ -1,41 +1,38 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+
+from model.mesh_utils import UNetLayer
+
 
 class VoxelEncoder(nn.Module):
-    def __init__(self):
+    def __init__(self, config):
         super(VoxelEncoder, self).__init__()
 
-        # voxel encoder does downsampling, so do 3D conv blocks to reduce spatial resolution
-        self.enc1 = self.conv_block(1, 32)
-        self.enc2 = self.conv_block(32, 64)
-        self.enc3 = self.conv_block(64, 128)
-        self.enc4 = self.conv_block(128, 256)
+        self.config = config
+        self.max_pool = nn.MaxPool3d(2) if config.ndims == 3 else nn.MaxPool2d(2)
 
-    def conv_block(self, in_channels, out_channels):
-        """
-        This is the convolution block that will downsample/reduce spatial resolution in input volume
-        Does 3D convolution w/ ReLU & MaxPooling
-        """
+        # create a series of down-sampling layers (U-Net encoder)
+        down_layers = [UNetLayer(config.num_input_channels, config.first_layer_channels, config.ndims)]
+        for i in range(1, config.steps + 1):
+            down_layers.append(
+                UNetLayer(
+                    config.first_layer_channels * 2 ** (i - 1),
+                    config.first_layer_channels * 2 ** i,
+                    config.ndims
+                )
+            )
 
-        return nn.Sequential(
-            nn.Conv3d(in_channels, out_channels, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(),
-            nn.MaxPool3d(kernel_size=2, stride=2),
-        )
+        self.down_layers = nn.Sequential(*down_layers)
 
     def forward(self, x):
-        """
-        Forward propagation through voxel encoder block
-        """
-        skip_connections = []
+        down_outputs = []  # skip connections
+        x = self.down_layers[0](x)
+        down_outputs.append(x)
 
-        enc1 = self.enc1(x)
-        enc2 = self.enc2(enc1)
-        enc3 = self.enc3(enc2)
-        enc4 = self.enc4(enc3)
+        for unet_layer in self.down_layers[1:]:
+            # max pool for downsampling
+            x = self.max_pool(x)
+            x = unet_layer(x)
+            down_outputs.append(x)
 
-        # enc4 is the output of the encoder, skip connections go to decoder block
-        return enc4, [enc1, enc2, enc3]
-
-
+        return down_outputs
