@@ -2,17 +2,19 @@
 
 # File paths
 TRAIN_IMAGES = r"data\train\images"
+TEST_IMAGES = r"data\test\images"
 TRAIN_LABELS = r"data\train\labels"
-TEMPLATE_MESH = "spheres\icosahedron_2562.obj"
+TEMPLATE_MESH = "spheres\icosahedron_10242.obj"
 
 # Global variables
-NRRD_DIMENSIONS = (100, 100, 22)  # All .nrrd images will be resized to 64x64x22
+NRRD_DIMENSIONS = (100, 100, 28)  # All .nrrd images will be resized to 100x100x28
 SEG_LABEL = 4   # '4' corresponds to left ventricle in our .seg.nrrd files
-NUM_POINTS = 2562
+NUM_POINTS = 10242
+SPACE_DIRECTIONS = [(-1.9230799999999997,-0,0), (-0,-1.9230799999999997,-0), (0,-0,5.0000273333706708)]
 
 class Config:
     ndims = 3
-    batch_size = 1
+    batch_size = 8
     num_input_channels = 1
     first_layer_channels = 16
     steps = 4

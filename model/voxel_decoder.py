@@ -14,7 +14,7 @@ class VoxelDecoder(nn.Module):
                                                                                               mode='bilinear',
                                                                                               align_corners=True)
 
-        # create a series of upsampling layers (U-Net decoder)
+        # create upsampling layers (unet decoder)
         up_layers = []
         for i in range(config.steps, 0, -1):
             up_layers.append(

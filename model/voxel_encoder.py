@@ -11,7 +11,7 @@ class VoxelEncoder(nn.Module):
         self.config = config
         self.max_pool = nn.MaxPool3d(2) if config.ndims == 3 else nn.MaxPool2d(2)
 
-        # create a series of down-sampling layers (U-Net encoder)
+        # create downsampling layers (unet encoder)
         down_layers = [UNetLayer(config.num_input_channels, config.first_layer_channels, config.ndims)]
         for i in range(1, config.steps + 1):
             down_layers.append(
