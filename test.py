@@ -11,8 +11,6 @@ from config import *
 # make sure to use gpu
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-
-
 # initialize template mesh
 template = TemplateMesh()
 template_faces = template.get_faces().cpu().numpy()

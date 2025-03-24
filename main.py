@@ -2,6 +2,7 @@ import torch
 import torch.optim as optim
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, TensorDataset
+import matplotlib.pyplot as plt
 
 from config import *
 from config import config
@@ -38,15 +39,15 @@ with torch.no_grad():
 train_surface_points_tensor = torch.tensor(train_surface_points, dtype=torch.float32)
 val_surface_points_tensor = torch.tensor(val_surface_points, dtype=torch.float32)
 
-# create TensorDatasets
+# create TensorDatasets to pass into DataLoaders
 train_dataset = TensorDataset(train_images_tensor, train_labels_tensor, train_surface_points_tensor)
 val_dataset = TensorDataset(val_images_tensor, val_labels_tensor, val_surface_points_tensor)
 
-# create DataLoaders
+# create DataLoaders to use w/ model
 train_loader = DataLoader(train_dataset, batch_size=config.batch_size, shuffle=True)
 val_loader = DataLoader(val_dataset, batch_size=config.batch_size, shuffle=False)
 
-# initialize data to pass into model
+# initialize data structure to pass into model
 data = {
     'x': train_images_tensor,
     'y_voxels': train_labels_tensor,
@@ -55,10 +56,12 @@ data = {
 
 # initialize model
 model = Voxel2Mesh(config).to(device)
-optimizer = optim.Adam(model.parameters(), lr=0.0002)
-scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10, verbose=True)
+optimizer = optim.Adam(model.parameters(), lr=0.0001)
+# scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10, verbose=True)
 
 # training loop
+train_losses = []
+val_losses = []
 num_epochs = 150
 print("Training...")
 for epoch in range(num_epochs):
@@ -77,6 +80,7 @@ for epoch in range(num_epochs):
         train_loss += loss.item()
 
     train_loss /= len(train_loader)
+    train_losses.append(train_loss)
 
     # validation w/ validation DataLoader
     model.eval()
@@ -88,10 +92,21 @@ for epoch in range(num_epochs):
             val_loss += loss.item()
 
     val_loss /= len(val_loader)
-    scheduler.step(val_loss)
+    val_losses.append(val_loss)
+    # scheduler.step(val_loss)
 
     print(f"Epoch {epoch+1}/{num_epochs}: Train Loss = {train_loss:.4f}, Val Loss = {val_loss:.4f}")
 
-
 torch.save(model.state_dict(), "voxel2mesh_model.pth")
 print("Model saved successfully.")
+
+# plot loss per epoch
+plt.figure(figsize=(10, 6))
+plt.plot(range(num_epochs), train_losses, label='Training Loss')
+plt.plot(range(num_epochs), val_losses, label='Validation Loss')
+plt.xlabel('Epoch')
+plt.ylabel('Loss')
+plt.title('Training and Validation Loss per Epoch')
+plt.legend()
+plt.grid(True)
+plt.show()

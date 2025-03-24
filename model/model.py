@@ -70,8 +70,6 @@ class Voxel2Mesh(nn.Module):
 
             # remove the extra channel dimension from target_voxels_resized
             target_voxels_resized = target_voxels_resized.squeeze(1)
-
-            # convert target_voxels_resized to Long type
             target_voxels_resized = target_voxels_resized.long()
 
             # ensure pred_voxels has the correct shape for cross-entropy loss

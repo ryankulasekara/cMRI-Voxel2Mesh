@@ -125,29 +125,35 @@ def preprocess(image, seg=False, target_size=NRRD_DIMENSIONS):
 
 def extract_surface_points(voxel_data, threshold=0.5, num_points=NUM_POINTS):
     """
-    Takes in the data from the labeled seg nrrd and returns a mesh representation of the voxels
+    Extracts mesh representation from labeled voxel data in seg nrrd
 
-    :param voxel_data: labels
-    :param threshold: 0 -> 0, 1 -> 1
-    :param num_points: number of points to extract (should match template mesh)
-    :return: mesh representation of the voxels
+    :param voxel_data: labeled volume (batch_size, x, y, z)
+    :param threshold: voxels are 0 or 1, so pick 0.5 for this
+    :param num_points: number of points to extract (should match template mesh size)
+    :return: resampled surface pts (batch_size, num_points, 3)
     """
-
     surface_points = []
 
-    # iterate through each volume
     for i in range(voxel_data.shape[0]):
-        # Select the current volume
         volume = voxel_data[i]
-
-        # apply threshold to create a binary mask for the volume
         surface_voxels = volume > threshold
 
-        # extract surface points using marching cubes
+        # extract surface using marching cubes
         vertices, faces, _, _ = marching_cubes(surface_voxels, level=threshold)
+
+        # sample points using nearest neighbors
         nbrs = NearestNeighbors(n_neighbors=1, algorithm='auto').fit(vertices)
-        _, indices = nbrs.kneighbors(np.random.rand(num_points, 3))
+        bbox_min, bbox_max = vertices.min(axis=0), vertices.max(axis=0)
+        random_points = np.random.uniform(bbox_min, bbox_max, (num_points, 3))
+        _, indices = nbrs.kneighbors(random_points)
         resampled_points = vertices[indices.flatten()]
+
+        # z-score norm, prevent divide by 0
+        resampled_points_mean = resampled_points.mean(axis=0)
+        resampled_points_std = resampled_points.std(axis=0)
+        resampled_points_std[resampled_points_std == 0] = 1.0
+        resampled_points = (resampled_points - resampled_points_mean) / resampled_points_std
+
         surface_points.append(resampled_points)
 
     return np.array(surface_points)
