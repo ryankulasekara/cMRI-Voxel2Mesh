@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from config import *
 
 def chamfer_distance(pred_points, target_points):
     """
@@ -11,13 +12,14 @@ def chamfer_distance(pred_points, target_points):
     pred_expanded = pred_points.unsqueeze(2)  # (B, N, 1, 3)
     target_expanded = target_points.unsqueeze(1)  # (B, 1, M, 3)
 
+    pred_expanded = pred_expanded / (pred_expanded.norm(dim=-1, keepdim=True) + 1e-8)
+    target_expanded = target_expanded / (target_expanded.norm(dim=-1, keepdim=True) + 1e-8)
+
     distances = torch.norm(pred_expanded - target_expanded, dim=-1)  # (B, N, M)
 
-    # nearest neighbor distance
-    min_dist_pred_to_target = distances.min(dim=2)[0]  # (B, N)
-    min_dist_target_to_pred = distances.min(dim=1)[0]  # (B, M)
+    dist = torch.cdist(pred_expanded, target_expanded, p=2) + 1e-8
 
-    return min_dist_pred_to_target.mean() + min_dist_target_to_pred.mean()
+    return (dist.min(2)[0].mean() + dist.min(1)[0].mean()) / 2
 
 def mesh_edge_loss(vertices, faces):
     """
@@ -64,6 +66,13 @@ def laplacian_smoothing(vertices, faces):
 
 
 def cross_entropy_loss(pred_voxels, target_voxels):
-    criterion = nn.CrossEntropyLoss()
-    loss = criterion(pred_voxels, target_voxels)
-    return loss
+    smooth = 0.1
+    target = target_voxels * (1 - smooth) + 0.5 * smooth
+    return F.binary_cross_entropy_with_logits(
+        pred_voxels,
+        target,
+        reduction='mean'
+    )
+
+    # return loss
+

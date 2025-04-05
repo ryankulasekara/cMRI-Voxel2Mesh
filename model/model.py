@@ -1,7 +1,10 @@
 import torch
 import torch.nn as nn
+import pyvista as pv
+import numpy as np
 import torch.nn.functional as F
 
+from config import NRRD_DIMENSIONS
 from model.voxel_encoder import VoxelEncoder
 from model.voxel_decoder import VoxelDecoder
 from model.mesh_decoder import MeshDecoder
@@ -12,74 +15,66 @@ from model.template_mesh import TemplateMesh
 class Voxel2Mesh(nn.Module):
     def __init__(self, config):
         super(Voxel2Mesh, self).__init__()
-
         self.config = config
+        self.template_mesh = TemplateMesh()
+
+        # initialize each component of the network
         self.voxel_encoder = VoxelEncoder(config)
         self.voxel_decoder = VoxelDecoder(config)
         self.mesh_decoder = MeshDecoder(config)
-        self.template_mesh = TemplateMesh()
 
     def forward(self, data):
         voxel_features = self.voxel_encoder(data['x'])
         voxel_output = self.voxel_decoder(voxel_features)
         mesh_output = self.mesh_decoder(voxel_output)
 
-        return mesh_output
+        return {
+            'mesh': mesh_output,
+            'segmentation': voxel_output['segmentation']
+        }
 
     def loss(self, data):
         """
-        Computes the total loss for Voxel2Mesh.
+        Computes the total loss for Voxel2Mesh using weighted combination of loss functions.
+        These are the two main ones from the paper:
+            1. Cross-Entropy Loss: computed between predicted voxels & labels
+            2. Chamfer Loss: computed between predicted mesh & marching cubes from labels
         """
+
+        # get predictions from model
+        # pred is a dict with:
+        # pred['segmentation'] is the segmentation output from voxel decoder
+        # pred['mesh'] is the deformed mesh output from the mesh decoder
         pred = self.forward(data)
 
-        ce_loss = torch.tensor(0.0, device=data['x'].device)
-        chamfer_loss = torch.tensor(0.0, device=data['x'].device)
-        edge_loss = torch.tensor(0.0, device=data['x'].device)
-        laplacian_loss = torch.tensor(0.0, device=data['x'].device)
+        # cross-entropy loss
+        ce_loss = cross_entropy_loss(
+            pred['segmentation'].squeeze(1),
+            data['y_voxels'].float()
+        )
 
-        # get the original faces from the template mesh
+        # mesh losses
         faces = self.template_mesh.get_faces().to(data['x'].device)
+        chamfer_loss = chamfer_distance(pred['mesh'], data['surface_points'])
+        edge_loss = mesh_edge_loss(pred['mesh'], faces)
+        laplacian_loss = laplacian_smoothing(pred['mesh'], faces)
 
-        for c in range(self.config.num_classes - 1):
-            target_points = data['surface_points'][c]
-
-            # deformed vertices from the prediction
-            vertices = pred[c][:, :3]
-            voxel_features = self.voxel_encoder(data['x'])
-
-            # ensure proper shape for chamfer_distance
-            vertices = vertices.unsqueeze(0)
-            target_points = target_points.unsqueeze(0)
-
-            # loss calculations
-            chamfer_loss += chamfer_distance(vertices, target_points)
-            edge_loss += mesh_edge_loss(vertices, faces)
-            laplacian_loss += laplacian_smoothing(vertices, faces)
-
-            # pass voxel features to voxel decoder to get pred_voxels
-            pred_voxels = self.voxel_decoder(voxel_features)
-
-            # add channel dimension to y_voxels before resizing
-            # assume the target has shape (1, 100, 100, 22)
-            target_voxels = data['y_voxels'].unsqueeze(1).float()
-
-            # resize target_voxels to match the output shape from the model
-            target_voxels_resized = F.interpolate(
-                target_voxels, size=(96, 96, 16), mode='trilinear', align_corners=False
-            ).to(data['x'].device)
-
-            # remove the extra channel dimension from target_voxels_resized
-            target_voxels_resized = target_voxels_resized.squeeze(1)
-            target_voxels_resized = target_voxels_resized.long()
-
-            # ensure pred_voxels has the correct shape for cross-entropy loss
-            ce_loss += cross_entropy_loss(pred_voxels, target_voxels_resized)
+        # # debugging code
+        # faces_pyvista = []
+        # for face in self.template_mesh.get_faces():
+        #     faces_pyvista.append([3, *face])
+        # faces_pyvista = np.array(faces_pyvista).flatten()
+        # pv_mesh = pv.PolyData(data['surface_points'].cpu().detach().numpy().squeeze(0))
+        # pv_mesh.plot()
+        #
+        # pv_mesh = pv.PolyData(pred['mesh'].cpu().detach().numpy().squeeze(0))
+        # pv_mesh.plot()
 
         # weighted sum of losses
         total_loss = (
-                1.0 * chamfer_loss +
+                2.0 * chamfer_loss +
                 1.0 * ce_loss +
-                0.1 * laplacian_loss +
+                0.2 * laplacian_loss +
                 1.0 * edge_loss
         )
 

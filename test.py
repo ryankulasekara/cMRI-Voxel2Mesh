@@ -2,6 +2,7 @@ import torch
 import trimesh
 import pyvista as pv
 import numpy as np
+from sklearn import preprocessing
 
 from model.model import Voxel2Mesh
 from data import load_images
@@ -22,6 +23,7 @@ for face in template_faces:
 faces_pyvista = np.array(faces_pyvista).flatten()
 
 # load trained model
+config.batch_size = 1
 model = Voxel2Mesh(config).to(device)
 model.load_state_dict(torch.load("voxel2mesh_model.pth", map_location=device))
 model.eval()
@@ -37,9 +39,9 @@ print("Running model on test images...")
 with torch.no_grad():
     for i in range(len(test_images)):
         input_data = {'x': test_images_tensor[i].unsqueeze(0)}
-        predicted_vertices = model.forward(input_data)
+        predicted_vertices = model.forward(input_data)['mesh']
         predicted_vertices = predicted_vertices.cpu().numpy().squeeze()
-        predicted_vertices = predicted_vertices * voxel_spacing
+        # predicted_vertices *= voxel_spacing
         pv_mesh = pv.PolyData(predicted_vertices, faces_pyvista)
         pv_mesh.plot()
 

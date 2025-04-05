@@ -1,5 +1,6 @@
 import torch
 import trimesh
+from sklearn import preprocessing
 
 from config import TEMPLATE_MESH
 
@@ -11,7 +12,7 @@ class TemplateMesh:
         self.vertices = torch.tensor(self.mesh.vertices, dtype=torch.float32) # (num points, 3)
         vertices_mean = self.vertices.mean(dim=0)
         vertices_std = self.vertices.std(dim=0)
-        self.vertices = (self.vertices - vertices_mean) / vertices_std
+        # self.vertices = (self.vertices - vertices_mean) / vertices_std
 
         self.faces = torch.tensor(self.mesh.faces, dtype=torch.long)
         self.faces = self.faces.unique(dim=0)
