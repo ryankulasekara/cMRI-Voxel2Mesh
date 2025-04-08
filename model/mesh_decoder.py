@@ -66,7 +66,7 @@ class MeshDecoder(nn.Module):
             displacements.append(self.displacement_head(xi))
 
         # apply the displacements on the template mesh
-        deformed_vertices = vertices + torch.stack(displacements) * 0.2  # [B, N, 3]
+        deformed_vertices = vertices + torch.clamp(torch.stack(displacements), -0.5, 0.5) * 1.0  # [B, N, 3]
         return deformed_vertices
 
     def faces_to_edges(self, faces):

@@ -7,19 +7,24 @@ def chamfer_distance(pred_points, target_points):
     """
     Computes Chamfer Distance between predicted and target point sets.
     """
-    batch_size, num_points, _ = pred_points.shape
 
-    pred_expanded = pred_points.unsqueeze(2)  # (B, N, 1, 3)
-    target_expanded = target_points.unsqueeze(1)  # (B, 1, M, 3)
+    # # debugging
+    # import matplotlib.pyplot as plt
+    # plt.scatter(pred_points[0, :, 0].cpu().detach().numpy(), pred_points[0, :, 1].cpu().detach().numpy())
+    # plt.scatter(target_points[0, :, 0].cpu().detach().numpy(), target_points[0, :, 1].cpu().detach().numpy())
+    # plt.show()
 
-    pred_expanded = pred_expanded / (pred_expanded.norm(dim=-1, keepdim=True) + 1e-8)
-    target_expanded = target_expanded / (target_expanded.norm(dim=-1, keepdim=True) + 1e-8)
+    # compute distances between pairs of pts in predicted and target point clouds
+    dist = torch.cdist(pred_points, target_points, p=2) + 1e-8  # (B, N, M)
 
-    distances = torch.norm(pred_expanded - target_expanded, dim=-1)  # (B, N, M)
+    # chamfer distance components (minimum distances)
+    dist_pred_to_target = dist.min(dim=2)[0]  # (B, N)
+    dist_target_to_pred = dist.min(dim=1)[0]  # (B, M)
 
-    dist = torch.cdist(pred_expanded, target_expanded, p=2) + 1e-8
+    # mean over all points
+    chamfer_loss = (dist_pred_to_target.mean() + dist_target_to_pred.mean()) / 2
 
-    return (dist.min(2)[0].mean() + dist.min(1)[0].mean()) / 2
+    return chamfer_loss
 
 def mesh_edge_loss(vertices, faces):
     """

@@ -74,7 +74,7 @@ class Voxel2Mesh(nn.Module):
         total_loss = (
                 2.0 * chamfer_loss +
                 1.0 * ce_loss +
-                0.2 * laplacian_loss +
+                0.1 * laplacian_loss +
                 1.0 * edge_loss
         )
 

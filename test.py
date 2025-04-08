@@ -41,7 +41,7 @@ with torch.no_grad():
         input_data = {'x': test_images_tensor[i].unsqueeze(0)}
         predicted_vertices = model.forward(input_data)['mesh']
         predicted_vertices = predicted_vertices.cpu().numpy().squeeze()
-        # predicted_vertices *= voxel_spacing
+        predicted_vertices *= voxel_spacing
         pv_mesh = pv.PolyData(predicted_vertices, faces_pyvista)
         pv_mesh.plot()
 

@@ -6,7 +6,7 @@ TRAIN_IMAGES = r"data\train\images"
 TEST_IMAGES = r"data\test\images"
 # TRAIN_LABELS = r"C:\Users\rkulase\Documents\MMWHS MRI\mr_train\labels"
 TRAIN_LABELS = r"data\train\labels"
-TEMPLATE_MESH = "spheres\icosahedron_2562.obj"
+TEMPLATE_MESH = "spheres\icosahedron_642.obj"
 
 # Global variables
 NRRD_DIMENSIONS = (96, 96, 32)  # size to resize images & labels to

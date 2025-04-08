@@ -1,6 +1,7 @@
 import torch
 import torch.optim as optim
 from sklearn.model_selection import train_test_split
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader, TensorDataset
 import matplotlib.pyplot as plt
 
@@ -55,17 +56,13 @@ data = {
 
 # initialize model
 model = Voxel2Mesh(config).to(device)
-optimizer = optim.Adam(model.parameters(), lr=1e-5)
-scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-    optimizer,
-    T_max=50,
-    eta_min=1e-6
-)
+optimizer = optim.Adam(model.parameters(), lr=1e-4)
+scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=50, verbose=True)
 
 # training loop
 train_losses = []
 val_losses = []
-num_epochs = 10000
+num_epochs = 250
 print("Training...")
 for epoch in range(num_epochs):
     model.train()
@@ -78,6 +75,7 @@ for epoch in range(num_epochs):
         images, labels, surface_points = images.to(device), labels.to(device), surface_points.to(device)
 
         optimizer.zero_grad()
+        # was running out of memory on gpu so doing this w/ autocast
         with torch.cuda.amp.autocast():
             loss, log = model.loss({'x': images, 'y_voxels': labels, 'surface_points': surface_points})
 
@@ -97,15 +95,19 @@ for epoch in range(num_epochs):
     with torch.no_grad():
         for images, labels, surface_points in val_loader:
             images, labels, surface_points = images.to(device), labels.to(device), surface_points.to(device)
+
+            # was running out of memory on gpu so doing this w/ autocast
             with torch.cuda.amp.autocast():
                 loss, _ = model.loss({'x': images, 'y_voxels': labels, 'surface_points': surface_points})
                 val_loss += loss.item()
 
     val_loss /= len(val_loader)
     val_losses.append(val_loss)
-    scheduler.step()
+    scheduler.step(val_loss)
 
-    print(f"Epoch {epoch+1}/{num_epochs}: Training Loss: {train_loss:.4f}, Validation Loss: {val_loss:.4f}")
+    print(f"Epoch {epoch+1}/{num_epochs}: Training Loss: {train_loss:.4f}, Chamfer: {log['chamfer_loss']:.4f}, "
+          f"Cross-Entropy: {log['ce_loss']:.4f}, Edge: {log['edge_loss']:.4f}, "
+          f"Laplacian: {log['laplacian_loss']:.4f}, Validation Loss: {val_loss:.4f}")
 
 torch.save(model.state_dict(), "voxel2mesh_model.pth")
 print("Model saved successfully.")
