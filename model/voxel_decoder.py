@@ -50,7 +50,7 @@ class VoxelDecoder(nn.Module):
             x = self.upsample(x)
             x = unet_layer(x)
 
-            # gradient clipping for stability
+            # gradient clipping for stability - dealing with NaNs popping up in this layer...?
             x = torch.clamp(x, -1e3, 1e3)
             if i % 2 == 0:
                 x = x / (torch.norm(x, dim=1, keepdim=True) + 1e-8)

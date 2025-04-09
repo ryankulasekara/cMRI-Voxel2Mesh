@@ -15,13 +15,16 @@ def chamfer_distance(pred_points, target_points):
     # plt.show()
 
     # compute distances between pairs of pts in predicted and target point clouds
+    # B = batch size
+    # N = num pts in predicted pt cloud (template mesh)
+    # M = num pts in marching cubes from labels
     dist = torch.cdist(pred_points, target_points, p=2) + 1e-8  # (B, N, M)
 
     # chamfer distance components (minimum distances)
     dist_pred_to_target = dist.min(dim=2)[0]  # (B, N)
     dist_target_to_pred = dist.min(dim=1)[0]  # (B, M)
 
-    # mean over all points
+    # mean over all min pairs
     chamfer_loss = (dist_pred_to_target.mean() + dist_target_to_pred.mean()) / 2
 
     return chamfer_loss
@@ -30,14 +33,18 @@ def mesh_edge_loss(vertices, faces):
     """
     Computes edge length loss to encourage smoothness.
     """
+
+    # get the 3 pts that make up each face
     v0 = vertices[:, faces[:, 0], :]
     v1 = vertices[:, faces[:, 1], :]
     v2 = vertices[:, faces[:, 2], :]
 
+    # get the three edges from each face
     edge1 = torch.norm(v0 - v1, dim=-1)
     edge2 = torch.norm(v1 - v2, dim=-1)
     edge3 = torch.norm(v2 - v0, dim=-1)
 
+    # mean length of each edge
     return (edge1.mean() + edge2.mean() + edge3.mean()) / 3
 
 def laplacian_smoothing(vertices, faces):

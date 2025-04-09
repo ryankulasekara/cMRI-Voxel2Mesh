@@ -1,7 +1,7 @@
 import torch
 import torch.optim as optim
 from sklearn.model_selection import train_test_split
-from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.optim.lr_scheduler import ReduceLROnPlateau, CosineAnnealingLR
 from torch.utils.data import DataLoader, TensorDataset
 import matplotlib.pyplot as plt
 
@@ -25,12 +25,13 @@ train_labels = load_labels(TRAIN_LABELS, train_images)
 # split into training and validation sets
 train_images, val_images, train_labels, val_labels = train_test_split(train_images, train_labels, test_size=0.3, random_state=42)
 
-# convert to tensor and move to gpu
+# convert to tensor and move to gpu, permute to get dimensions in the right spots
 train_images_tensor = torch.tensor(train_images, dtype=torch.float32).unsqueeze(1).permute(0, 1, 3, 2, 4)
-train_labels_tensor = torch.tensor(train_labels, dtype=torch.long).squeeze(1)  # Remove channel dim if exists
+train_labels_tensor = torch.tensor(train_labels, dtype=torch.long).squeeze(1)
 val_images_tensor = torch.tensor(val_images, dtype=torch.float32).unsqueeze(1).permute(0, 1, 3, 2, 4)
 val_labels_tensor = torch.tensor(val_labels, dtype=torch.long).squeeze(1)
 
+# get surface points from the labels (marching cubes mesh)
 print("Extracting surface points from training labels...")
 with torch.no_grad():
     train_surface_points = extract_surface_points(train_labels)
@@ -47,22 +48,16 @@ val_dataset = TensorDataset(val_images_tensor, val_labels_tensor, val_surface_po
 train_loader = DataLoader(train_dataset, batch_size=config.batch_size, shuffle=True)
 val_loader = DataLoader(val_dataset, batch_size=config.batch_size, shuffle=False)
 
-# initialize data structure to pass into model
-data = {
-    'x': train_images_tensor,
-    'y_voxels': train_labels_tensor,
-    'surface_points': train_surface_points_tensor
-}
-
 # initialize model
 model = Voxel2Mesh(config).to(device)
 optimizer = optim.Adam(model.parameters(), lr=1e-4)
-scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=50, verbose=True)
+# scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=50, verbose=True)
+scheduler = CosineAnnealingLR(optimizer, T_max=50, eta_min=1e-6)
 
 # training loop
 train_losses = []
 val_losses = []
-num_epochs = 250
+num_epochs = 350
 print("Training...")
 for epoch in range(num_epochs):
     model.train()

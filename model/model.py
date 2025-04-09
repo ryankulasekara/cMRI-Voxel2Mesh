@@ -42,7 +42,7 @@ class Voxel2Mesh(nn.Module):
         """
 
         # get predictions from model
-        # pred is a dict with:
+        # pred is a dict:
         # pred['segmentation'] is the segmentation output from voxel decoder
         # pred['mesh'] is the deformed mesh output from the mesh decoder
         pred = self.forward(data)
@@ -73,9 +73,9 @@ class Voxel2Mesh(nn.Module):
         # weighted sum of losses
         total_loss = (
                 2.0 * chamfer_loss +
-                1.0 * ce_loss +
-                0.1 * laplacian_loss +
-                1.0 * edge_loss
+                1.2 * ce_loss +
+                0.3 * laplacian_loss +
+                1.5 * edge_loss
         )
 
         log = {

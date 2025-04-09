@@ -1,13 +1,14 @@
-import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from scipy.spatial import ConvexHull
-from itertools import combinations
 
 
 class UNetLayer(nn.Module):
     def __init__(self, num_channels_in, num_channels_out, ndims, batch_norm=True):
         super(UNetLayer, self).__init__()
+        """
+        U-Net layer used in voxel encoder & voxel decoder
+        Got the bulk of this code from the voxel2mesh repo
+        """
+
 
         conv_op = nn.Conv2d if ndims == 2 else nn.Conv3d
         batch_norm_op = nn.BatchNorm2d if ndims == 2 else nn.BatchNorm3d
