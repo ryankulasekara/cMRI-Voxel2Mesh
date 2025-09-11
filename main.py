@@ -18,9 +18,9 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # load data
 print("Loading training images...")
-train_images = load_images(TRAIN_IMAGES)
+train_images, train_image_headers = load_images(TRAIN_IMAGES)
 print("Loading training labels...")
-train_labels = load_labels(TRAIN_LABELS, train_images)
+train_labels = load_labels(TRAIN_LABELS, train_image_headers)
 
 # split into training and validation sets
 train_images, val_images, train_labels, val_labels = train_test_split(train_images, train_labels, test_size=0.3, random_state=42)
@@ -37,6 +37,7 @@ with torch.no_grad():
     train_surface_points = extract_surface_points(train_labels)
     val_surface_points = extract_surface_points(val_labels)
 
+# convert to tensor
 train_surface_points_tensor = torch.tensor(train_surface_points, dtype=torch.float32)
 val_surface_points_tensor = torch.tensor(val_surface_points, dtype=torch.float32)
 
@@ -48,16 +49,16 @@ val_dataset = TensorDataset(val_images_tensor, val_labels_tensor, val_surface_po
 train_loader = DataLoader(train_dataset, batch_size=config.batch_size, shuffle=True)
 val_loader = DataLoader(val_dataset, batch_size=config.batch_size, shuffle=False)
 
-# initialize model
+# initialize model, optimizer, & scheduler
 model = Voxel2Mesh(config).to(device)
-optimizer = optim.Adam(model.parameters(), lr=1e-4)
-# scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=50, verbose=True)
-scheduler = CosineAnnealingLR(optimizer, T_max=50, eta_min=1e-6)
+optimizer = optim.Adam(model.parameters(), lr=1e-3)
+scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=100, verbose=True)
+# scheduler = CosineAnnealingLR(optimizer, T_max=50, eta_min=1e-6)
 
 # training loop
 train_losses = []
 val_losses = []
-num_epochs = 350
+num_epochs = 300
 print("Training...")
 for epoch in range(num_epochs):
     model.train()
@@ -77,7 +78,6 @@ for epoch in range(num_epochs):
         scaler.scale(loss).backward()
         scaler.step(optimizer)
         scaler.update()
-        optimizer.step()
 
         train_loss += loss.item()
 
@@ -117,3 +117,4 @@ plt.title('Training and Validation Loss per Epoch')
 plt.legend()
 plt.grid(True)
 plt.show()
+

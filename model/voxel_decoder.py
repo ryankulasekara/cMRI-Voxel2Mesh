@@ -1,65 +1,69 @@
+# voxel_decoder.py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-from config import *
 from model.mesh_utils import UNetLayer
-
 
 class VoxelDecoder(nn.Module):
     def __init__(self, config):
-        super(VoxelDecoder, self).__init__()
-
+        super().__init__()
         self.config = config
-        self.upsample = nn.Upsample(scale_factor=2, mode='trilinear',align_corners=True) if config.ndims == 3 else (
-            nn.Upsample(scale_factor=2,mode='bilinear',align_corners=True))
 
-        # create upsampling layers (unet decoder)
-        up_layers = []
+        self.upsample = nn.Upsample(
+            scale_factor=2,
+            mode='trilinear' if config.ndims == 3 else 'bilinear',
+            align_corners=False,
+        )
+
+        ups = []
         for i in range(config.steps, 0, -1):
-            up_layers.append(
-                UNetLayer(
-                    config.first_layer_channels * 2 ** i,
-                    config.first_layer_channels * 2 ** (i - 1),
-                    config.ndims
-                )
-            )
+            ups.append(UNetLayer(
+                config.first_layer_channels * 2 ** i,
+                config.first_layer_channels * 2 ** (i - 1),
+                config.ndims
+            ))
+        self.up_layers = nn.Sequential(*ups)
 
-        self.up_layers = nn.Sequential(*up_layers)
+        # input norm expects channels = last encoder channels
+        self.input_norm = nn.GroupNorm(
+            num_groups=4,
+            num_channels=config.first_layer_channels * 2 ** config.steps,
+            eps=1e-5
+        )
 
-        # layer normalization before heads
-        self.norm = nn.InstanceNorm3d(config.voxel_feature_dim)
+        self.seg_head = nn.Conv3d(config.voxel_feature_dim, 1, kernel_size=1, bias=True)
+        self.feature_head = nn.Conv3d(config.voxel_feature_dim, config.voxel_feature_dim, kernel_size=1)
 
-        # output both segmentation and features
-        self.seg_head = nn.Conv3d(config.voxel_feature_dim, 1, kernel_size=1)
-        self.feature_head = nn.Conv3d(config.voxel_feature_dim, config.voxel_feature_dim,
-                                      kernel_size=1)
-
-        # initialize heads with smaller weights
-        nn.init.kaiming_normal_(self.seg_head.weight, mode='fan_in', nonlinearity='sigmoid')
-        nn.init.kaiming_normal_(self.feature_head.weight, mode='fan_in')
+        nn.init.kaiming_normal_(self.seg_head.weight, mode='fan_in', nonlinearity='linear')
+        nn.init.kaiming_normal_(self.feature_head.weight, mode='fan_in', nonlinearity='linear')
         self.seg_head.bias.data.zero_()
         self.feature_head.bias.data.zero_()
 
-
     def forward(self, down_outputs):
-        x = down_outputs[-1]
+        with torch.autocast(device_type='cuda', enabled=False):
+            x = down_outputs[-1].float()
 
-        for i, unet_layer in enumerate(self.up_layers):
-            # upsampling
-            x = self.upsample(x)
-            x = unet_layer(x)
+            x = self.input_norm(x)
+            x = torch.clamp(x, -1e2, 1e2)
 
-            # gradient clipping for stability - dealing with NaNs popping up in this layer...?
-            x = torch.clamp(x, -1e3, 1e3)
-            if i % 2 == 0:
-                x = x / (torch.norm(x, dim=1, keepdim=True) + 1e-8)
+            for unet_layer in self.up_layers:
+                x = self.upsample(x.float()).float()
+                x = unet_layer(x.float())
+                x = torch.clamp(x, -1e2, 1e2)
 
-        # normalization for stability
-        x = self.norm(x)
-        x = torch.clamp(x, -50, 50)
+            # heads
+            features = torch.tanh(self.feature_head(x.float()))
+            features = torch.clamp(features, -10, 10)
 
-        return {
-            'segmentation': torch.sigmoid(self.seg_head(x)),  # [B, 1, D, H, W] - sigmoid scales from 0-1 (confidence)
-            'features': F.tanhshrink(self.feature_head(x))  # [B, 16, D, H, W]
-        }
+            # non-normalized logits
+            seg_logits = self.seg_head(x.float())
+            seg_logits = torch.clamp(seg_logits, -50, 50)
+
+            # do sigmoid to get probabilities/confidences at each voxel
+            seg = torch.sigmoid(seg_logits)
+
+            return {
+                "segmentation": seg,
+                "features": features
+            }
+

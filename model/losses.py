@@ -3,31 +3,42 @@ import torch.nn as nn
 import torch.nn.functional as F
 from config import *
 
+
+def normalize_points(points, eps=1e-6):
+    """
+    Normalize a mesh so each dimension is within [-1,1]
+
+    :param points: array of points for each mesh (B, N, 3)
+    :param eps: prevents divide by zero
+    :return: normalized mesh points
+    """
+
+    min_val, _ = points.min(dim=1, keepdim=True)
+    max_val, _ = points.max(dim=1, keepdim=True)
+    center = (min_val + max_val) / 2
+    scale = (max_val - min_val).max(dim=2, keepdim=True)[0] + eps
+
+    return (points - center) / scale
+
+
 def chamfer_distance(pred_points, target_points):
     """
     Computes Chamfer Distance between predicted and target point sets.
     """
 
-    # # debugging
-    # import matplotlib.pyplot as plt
-    # plt.scatter(pred_points[0, :, 0].cpu().detach().numpy(), pred_points[0, :, 1].cpu().detach().numpy())
-    # plt.scatter(target_points[0, :, 0].cpu().detach().numpy(), target_points[0, :, 1].cpu().detach().numpy())
-    # plt.show()
+    # normalize both clouds
+    pred_points = normalize_points(pred_points)
+    target_points = normalize_points(target_points)
 
-    # compute distances between pairs of pts in predicted and target point clouds
-    # B = batch size
-    # N = num pts in predicted pt cloud (template mesh)
-    # M = num pts in marching cubes from labels
+    # compute distances
     dist = torch.cdist(pred_points, target_points, p=2) + 1e-8  # (B, N, M)
 
-    # chamfer distance components (minimum distances)
     dist_pred_to_target = dist.min(dim=2)[0]  # (B, N)
     dist_target_to_pred = dist.min(dim=1)[0]  # (B, M)
 
-    # mean over all min pairs
     chamfer_loss = (dist_pred_to_target.mean() + dist_target_to_pred.mean()) / 2
-
     return chamfer_loss
+
 
 def mesh_edge_loss(vertices, faces):
     """
@@ -46,6 +57,7 @@ def mesh_edge_loss(vertices, faces):
 
     # mean length of each edge
     return (edge1.mean() + edge2.mean() + edge3.mean()) / 3
+
 
 def laplacian_smoothing(vertices, faces):
     """
@@ -78,13 +90,8 @@ def laplacian_smoothing(vertices, faces):
 
 
 def cross_entropy_loss(pred_voxels, target_voxels):
-    smooth = 0.1
-    target = target_voxels * (1 - smooth) + 0.5 * smooth
-    return F.binary_cross_entropy_with_logits(
-        pred_voxels,
-        target,
-        reduction='mean'
-    )
+    # ensure target is float
+    target = target_voxels.float()
 
-    # return loss
+    return F.binary_cross_entropy(pred_voxels, target, reduction="mean")
 

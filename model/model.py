@@ -3,6 +3,7 @@ import torch.nn as nn
 import pyvista as pv
 import numpy as np
 import torch.nn.functional as F
+import matplotlib.pyplot as plt
 
 from config import NRRD_DIMENSIONS
 from model.voxel_encoder import VoxelEncoder
@@ -27,6 +28,13 @@ class Voxel2Mesh(nn.Module):
         voxel_features = self.voxel_encoder(data['x'])
         voxel_output = self.voxel_decoder(voxel_features)
         mesh_output = self.mesh_decoder(voxel_output)
+
+        # visualize_slice(
+        #     input_vol=data['x'],
+        #     label_vol=data['y_voxels'],
+        #     pred_vol=voxel_output['segmentation'],
+        #     slice_idx=10
+        # )
 
         return {
             'mesh': mesh_output,
@@ -70,12 +78,13 @@ class Voxel2Mesh(nn.Module):
         # pv_mesh = pv.PolyData(pred['mesh'].cpu().detach().numpy().squeeze(0))
         # pv_mesh.plot()
 
+
         # weighted sum of losses
         total_loss = (
-                2.0 * chamfer_loss +
-                1.2 * ce_loss +
-                0.3 * laplacian_loss +
-                1.5 * edge_loss
+                2 * chamfer_loss +
+                0.5 * ce_loss +
+                0.1 * laplacian_loss +
+                0.1 * edge_loss
         )
 
         log = {
@@ -87,3 +96,48 @@ class Voxel2Mesh(nn.Module):
         }
 
         return total_loss, log
+
+
+def visualize_slice(input_vol, label_vol, pred_vol, slice_idx=None):
+    """
+    Display a slice of the image volume, its ground truth label, and predicted label
+
+    input_vol: array of input image volumes
+    label_vol: array of label/segmenatation volumes
+    pred_vol: array of predicted label volumes
+    slice_idx: slice along z-axis to show; default is middle slice
+    """
+
+    b, _, z, y, x = input_vol.shape
+    input_vol = input_vol.squeeze()
+    label_vol = label_vol.squeeze()
+    pred_vol = pred_vol.squeeze()
+
+    # choose middle slice if not specified
+    if slice_idx is None:
+        slice_idx = z // 2
+
+    # get a slice of the volumes to show
+    input_slice = input_vol[: ,: , slice_idx].cpu().numpy()
+    label_slice = label_vol[:, :, slice_idx].cpu().numpy()
+    pred_slice = pred_vol[:, :, slice_idx].cpu().detach().numpy()
+
+    fig, ax = plt.subplots(1, 3)
+    ax[0].imshow(input_slice, cmap='gray')
+    ax[0].set_title("Input Image")
+    ax[1].imshow(label_slice, cmap='gray')
+    ax[1].set_title("Ground Truth Label")
+    ax[2].imshow(pred_slice, cmap='gray')
+    ax[2].set_title("Predicted Segmentation")
+    for a in ax:
+        a.axis('off')
+
+    # display the fig
+    plt.tight_layout()
+    plt.show()
+
+
+
+
+
+

@@ -1,335 +1,207 @@
 import os
-import nrrd
-import nibabel as nib
 import numpy as np
+import torch
 import pyvista as pv
 import SimpleITK as sitk
-import trimesh
 from scipy.ndimage import zoom
-from skimage.measure import marching_cubes
-from sklearn.neighbors import NearestNeighbors
-from sklearn import preprocessing
+import skimage.measure
 
 from config import *
+from model.losses import normalize_points
 
 
-def load_labels(file_path, images):
+# helper to match nrrd dimensions order that sitk pulls
+TARGET_SHAPE_ZYX = (NRRD_DIMENSIONS[2], NRRD_DIMENSIONS[1], NRRD_DIMENSIONS[0])
+
+def reorient_to_identity(sitk_img, orientation="LPS"):
     """
-    Loads all .seg.nrrd files from a folder, extracts desired class label, stores them in a numpy array
+    Helper function to reorient simple itk segmentations to their respective input images
 
-    :param file_path: path to folder of .seg.nrrd files
-    :param images: array of images that correspond to each label
-    :return: numpy array of seg labels
+    :param sitk_img: the segmentation image
+    :param orientation: default orientation
+    :return: reoriented segmentation
     """
-
-    # get all the .seg.nrrd filenames
-    seg_nrrd_filenames = [f for f in os.listdir(file_path)]
-    labels = []
-
-    for i, filename in enumerate(seg_nrrd_filenames):
-        # Load label data
-        full_path = os.path.join(file_path, filename)
-        seg_data, _ = nrrd.read(full_path)
-
-        # Convert to SimpleITK images for resampling
-        img_sitk = sitk.GetImageFromArray(images[i])
-        seg_sitk = sitk.GetImageFromArray(seg_data.astype(np.float32))
-
-        # Resample label to match image
-        seg_resampled = sitk.Resample(
-            seg_sitk,
-            img_sitk,
-            sitk.Transform(),
-            sitk.sitkNearestNeighbor,
-            0.0,
-            seg_sitk.GetPixelID()
-        )
-
-        # Convert back to numpy and ensure 3D
-        seg_array = sitk.GetArrayFromImage(seg_resampled)
-        if len(seg_array.shape) == 4:  # If 4D (multiple labels)
-            seg_array = seg_array[SEG_LABEL, ...]  # Extract specific label
-
-        # Pad to target size
-        seg_array = pad_to_size(seg_array, NRRD_DIMENSIONS)
-        labels.append(seg_array)
-
-    return np.array(labels)
-
-
-def pad_to_size(data, target_size):
-    """
-    Padding function for labels & images
-
-    :param data: input image
-    :param target_size: size to zero pad to
-    :return: zero-padded image
-    """
-
-    current_size = data.shape
-    pad_amount = []
-    for i in range(3):
-        diff = target_size[i] - current_size[i]
-        if diff > 0:
-            pad_amount.append((diff // 2, diff - (diff // 2)))
-        else:
-            pad_amount.append((0, 0))
-
-    return np.pad(data, pad_amount, mode='constant', constant_values=0)
+    orient_filter = sitk.DICOMOrientImageFilter()
+    orient_filter.SetDesiredCoordinateOrientation(orientation)
+    return orient_filter.Execute(sitk_img)
 
 
 def load_images(file_path):
     """
-    Loads all .nrrd files from a folder & stores them in a numpy array.
+    Loads the MRI image volumes from a directory
 
-    :param file_path: path to folder of .nrrd files
-    :return: numpy array of images
+    :param file_path: directory containing mri image volumes
+    :return: array of loaded/preprocessed image volumes as well as headers for aligning the segmentation labels
     """
 
-    # get all the .nrrd filenames
-    nrrd_filenames = [f for f in os.listdir(file_path)]
     images = []
+    headers = []
+    img_files = sorted([f for f in os.listdir(file_path) if f.endswith('.nrrd') and not f.endswith('.seg.nrrd')])
 
-    for filename in nrrd_filenames:
+    for filename in img_files:
         full_path = os.path.join(file_path, filename)
-        image_data, _ = nrrd.read(full_path)
 
-        # Ensure 3D (remove 4th dim if exists)
-        if len(image_data.shape) == 4:
-            image_data = image_data[0, ...]
+        # load with simple itk - ordering is (z,y,x) by default
+        image_sitk = sitk.ReadImage(full_path)
+        image_sitk = reorient_to_identity(image_sitk)
+        img_np = sitk.GetArrayFromImage(image_sitk)  # remember that np array is in (z,y,x) order from the sitk image
 
-        # Pad to target size
-        image_data = pad_to_size(image_data, NRRD_DIMENSIONS)
-
-        # Normalize
-        mean = np.mean(image_data)
-        std = np.std(image_data)
-        image_data = (image_data - mean) / (std + 1e-8)
-
-        images.append(image_data)
-
-    return np.array(images)
-
-
-def load_nrrd(filename):
-    """
-    Loads a .nrrd file, separates into image data and header
-
-    :param filename: filename of .nrrd file
-    :return: image data and header
-    """
-
-    # load nrrd file
-    # image_data is a numpy array w/ voxel intensities
-    # header contains metadata
-    image_data, header = nrrd.read(filename)
-
-    return image_data, header
-
-
-def preprocess(image, seg=False, target_size=NRRD_DIMENSIONS):
-    """
-    Preprocesses a .nrrd image to standard size specified in config.py by zero-padding
-    Also z-score normalizes voxel values after zero-padding
-
-    :param image: input .nrrd image
-    :param seg: False if a normal image, True if a segmentation label
-    :param target_size: desired output size
-    :return: resized .nrrd image
-    """
-
-    # get current size of image
-    current_size = image.shape
-
-    # if it isn't a segmentation label, zero-pad & z-score normalize
-    if not seg:
-        # compute how much the image needs to be padded in each dimension
-        pad_amount = [(max(0, target_size[i] - current_size[i]), 0) for i in range(3)]
-
-        # apply the zero-padding
-        padded_image = np.pad(image, pad_amount, mode='constant', constant_values=0)
+        # pad/crop to target shape
+        img_np = np.transpose(pad_to_size(img_np, TARGET_SHAPE_ZYX, pad_value=0))
 
         # z-score normalize voxel intensities
-        mean = np.mean(padded_image)
-        std = np.std(padded_image)
-        image_data_normalized = (padded_image - mean) / std
+        mean, std = np.mean(img_np), np.std(img_np)
+        img_np = (img_np - mean) / (std + 1e-8)
 
-        return image_data_normalized
+        images.append(img_np)
+        headers.append(image_sitk)
 
-    # if it is a segmentation, do padding accordingly & extract the desired label & return the image
-    else:
-        # compute how much the image needs to be padded in each dimension
-        pad_amount = [(0, 0),
-                      (max(0, target_size[0] - current_size[1]), 0),
-                      (max(0, target_size[1] - current_size[2]), 0),
-                      (max(0, target_size[2] - current_size[3]), 0)]
+    return np.array(images), headers
 
-        # apply the zero-padding
-        padded_image = np.pad(image, pad_amount, mode='constant', constant_values=0)
 
-        # only get the desired label
-        seg_image = padded_image[SEG_LABEL, :, :, :]
-        return seg_image
-
-def extract_surface_points(voxel_data, threshold=0.5, num_points=NUM_POINTS):
+def load_labels(file_path, headers):
     """
-    Extracts mesh representation from labeled voxel data in seg nrrd
+    Loads the MRI labels from a directory
 
-    :param voxel_data: labeled volume (batch_size, x, y, z)
-    :param threshold: voxels are 0 or 1, so pick 0.5 for this
+    :param file_path: directory containing MRI labels
+    :param headers: headers for the corresponding MRI images
+    :return: array of loaded/preprocessed labels
+    """
+
+    labels = []
+    seg_files = sorted([f for f in os.listdir(file_path) if f.endswith('.seg.nrrd')])
+
+    for i, filename in enumerate(seg_files):
+        full_path = os.path.join(file_path, filename)
+
+        # load with simple itk - again, remember these are in (z,y,x) order
+        seg_sitk = sitk.ReadImage(full_path)
+        seg_sitk = reorient_to_identity(seg_sitk)
+        image_sitk = headers[i]  # matching MRI image header (contains alignment info)
+
+        # resample the segmentation to align with the corresponding input image
+        resampler = sitk.ResampleImageFilter()
+        resampler.SetReferenceImage(image_sitk)
+        resampler.SetInterpolator(sitk.sitkNearestNeighbor)
+        resampler.SetTransform(sitk.Transform())
+        seg_resampled = resampler.Execute(seg_sitk)
+
+        # convert to np array (still in (z,y,x) order)
+        seg_np = sitk.GetArrayFromImage(seg_resampled)
+
+        # get the correct label depending on the desired segmentation
+        if seg_np.ndim == 4:
+            seg_np = seg_np[..., SEG_LABEL]
+
+        # flip axes to be in (x,y,z) such that the labels align properly
+        seg_np = np.transpose(pad_to_size(seg_np, TARGET_SHAPE_ZYX, pad_value=0))
+        labels.append(np.flipud(np.rot90(seg_np)))
+
+    return np.array(labels)
+
+
+def pad_to_size(volume, target_shape_zyx, pad_value=0):
+    """
+    Zero-pad or crop MRI volume to the desired target shape
+
+    :param volume: input image or label volume
+    :param target_shape_zyx: target dimensions
+    :param pad_value: what number to pad with (0 by default)
+    :return:
+    """
+
+    # make sure inputs are np arrays
+    current_shape = np.array(volume.shape)
+    target_shape = np.array(target_shape_zyx)
+
+    # get center of before & after padding
+    # we want the center to be in the same spot (pad around all edges, not just extending outwards right & down)
+    pad_before = np.maximum((target_shape - current_shape) // 2, 0)
+    pad_after = np.maximum(target_shape - current_shape - pad_before, 0)
+    volume = np.pad(volume, [(pad_before[d], pad_after[d]) for d in range(3)], mode="constant", constant_values=pad_value)
+    current_shape = np.array(volume.shape)
+
+    # cropping while keeping foreground
+    crop_slices = []
+    for d in range(3):
+        if current_shape[d] > target_shape[d]:
+            # find indices of nonzero along axis d
+            nonzero_idx = np.where(volume != 0)
+            if len(nonzero_idx[0]) > 0:
+                # compute min/max along axis d
+                min_idx = nonzero_idx[d].min()
+                max_idx = nonzero_idx[d].max()
+                # Ensure crop window contains foreground and fits target
+                start = max(0, min(min_idx, current_shape[d] - target_shape[d]))
+                end = start + target_shape[d]
+            else:
+                # center crop if no foreground exists
+                start = (current_shape[d] - target_shape[d]) // 2
+                end = start + target_shape[d]
+            crop_slices.append(slice(start, end))
+        else:
+            crop_slices.append(slice(0, current_shape[d]))
+
+    volume = volume[tuple(crop_slices)]
+    return volume
+
+
+def extract_surface_points(voxel_data, threshold=0.5, num_points=NUM_POINTS, spacing=(1.92308, 1.92308, 9.99985)):
+    """
+    Extracts outer surface points from a labeled voxel volume using marching cubes,
+    resampling to isotropic spacing first so that the surface isn't limited to slice planes.
+
+    :param voxel_data: array of segmentation/labeled volumes
+    :param threshold: should be 0.5 (might need to change if adding multiple labels)
     :param num_points: number of points to extract
-    :return: resampled surface pts (batch_size, num_points, 3)
+    :param spacing: spacing between points in x,y,z directions
+    :return: array of extracted surface points
     """
-    surface_points = []
 
-    for i in range(voxel_data.shape[0]):
-        volume = voxel_data[i]
-        surface_voxels = volume > threshold
+    # convert to tensor - we want to use the GPU for this since it can take while if not
+    if isinstance(voxel_data, np.ndarray):
+        voxel_data = torch.tensor(voxel_data, dtype=torch.float32)
 
-        # extract surface using marching cubes
-        vertices, faces, _, _ = marching_cubes(surface_voxels, level=threshold)
+    # get batch size (getting surface pts from each individual volume)
+    B = voxel_data.shape[0]
+    all_points = []
 
-        # sample points using nearest neighbors
-        nbrs = NearestNeighbors(n_neighbors=1, algorithm='auto').fit(vertices)
-        bbox_min, bbox_max = vertices.min(axis=0), vertices.max(axis=0)
-        random_points = np.random.uniform(bbox_min, bbox_max, (num_points, 3))
-        _, indices = nbrs.kneighbors(random_points)
-        resampled_points = vertices[indices.flatten()]
-        voxel_spacing = np.array(SPACE_DIRECTIONS).diagonal()
-        resampled_points *= voxel_spacing
+    for b in range(B):
+        if voxel_data.ndim == 5:  # (B, C, D, H, W)
+            volume = voxel_data[b, 0].cpu().numpy()
+        elif voxel_data.ndim == 4:  # (B, D, H, W)
+            volume = voxel_data[b].cpu().numpy()
+        else:
+            raise ValueError(f"Unexpected voxel_data shape: {voxel_data.shape}")
 
-        # z-score norm, prevent divide by 0
-        resampled_points_mean = resampled_points.mean(axis=0)
-        resampled_points_std = resampled_points.std(axis=0)
-        # resampled_points_std[resampled_points_std == 0] = 1.0
-        # resampled_points = preprocessing.MinMaxScaler().fit_transform(resampled_points)
-        resampled_points = (resampled_points - resampled_points_mean) / resampled_points_std
+        # resample to isotropic spacing
+        # smallest spacing as target (1.9 mm)
+        target_spacing = min(spacing)
+        zoom_factors = [s / target_spacing for s in spacing]
+        volume_iso = zoom(volume, zoom=zoom_factors, order=0)
 
-        mesh = pv.PolyData(resampled_points)
-        # mesh.plot()
+        # ensure binary
+        volume_iso = (volume_iso > threshold).astype(np.uint8)
 
-        surface_points.append(resampled_points)
+        # marching cubes, then scale using correct spacing
+        verts, faces, _, _ = skimage.measure.marching_cubes(volume_iso, level=0.5)
+        verts *= target_spacing
 
-    return np.array(surface_points)
+        # sample pts to be num_points
+        # if extracted pts is greater than num_points
+        if verts.shape[0] > num_points:
+            idx = np.random.choice(verts.shape[0], num_points, replace=False)
+            verts = verts[idx]
+        # if extracted pts is less than num_points
+        else:
+            repeats = num_points // verts.shape[0] + 1
+            verts = np.tile(verts, (repeats, 1))[:num_points]
 
+        # convert to tensor
+        verts = torch.tensor(verts, dtype=torch.float32).unsqueeze(0)
 
-# def load_labels(file_path):
-#     """
-#     Loads all .nii.gz files from a folder, extracts desired class label, stores them in a numpy array.
-#     """
-#     # get all .nii.gz filenames
-#     nii_filenames = [f for f in os.listdir(file_path) if f.endswith(".nii.gz")]
-#
-#     labels = []
-#     for filename in nii_filenames:
-#         full_path = os.path.join(file_path, filename)
-#         nii_data = nib.load(full_path).get_fdata()
-#
-#         # preprocess (resize)
-#         nii_data = preprocess(nii_data, seg=True)
-#
-#         labels.append(nii_data)
-#
-#     return np.array(labels)
-#
-#
-# def load_images(file_path):
-#     nii_filenames = [f for f in os.listdir(file_path) if f.endswith(".nii.gz")]
-#
-#     images = []
-#     for filename in nii_filenames:
-#         full_path = os.path.join(file_path, filename)
-#         image_data = load_nii(full_path)  # Replace with your .nii.gz loader
-#
-#         print(f"Original shape of {filename}: {image_data.shape}")
-#
-#         image_data = preprocess(image_data)
-#
-#         print(f"Processed shape of {filename}: {image_data.shape}")
-#
-#         images.append(image_data)
-#
-#     return np.stack(images, axis=0)  # Ensures uniform shape
-#
-#
-# def load_nii(filename):
-#     """
-#     Loads a .nii.gz file and returns the image data as a numpy array.
-#
-#     :param filename: filename of .nii.gz file
-#     :return: image data as a numpy array
-#     """
-#
-#     # Load .nii.gz file using nibabel
-#     nii_img = nib.load(filename)
-#
-#     # Convert to numpy array (ensuring proper data type)
-#     image_data = nii_img.get_fdata(dtype=np.float32)
-#
-#     return image_data
-#
-#
-# def preprocess(image, seg=False, target_size=(128, 128, 64)):
-#     """
-#     Preprocesses a 3D image by downsampling to the target size and applying z-score normalization.
-#
-#     :param image: Input 3D image
-#     :param seg: Boolean, False for normal image, True for segmentation label
-#     :param target_size: Desired output size (100, 100, 100)
-#     :return: Downsampled and normalized image
-#     """
-#     current_size = image.shape
-#
-#     # Compute scaling factors for each dimension
-#     zoom_factors = [target_size[i] / current_size[i] for i in range(3)]
-#
-#     # Downsample using scipy.ndimage.zoom
-#     downsampled_image = zoom(image, zoom_factors, order=1)  # Use order=1 for bilinear interpolation
-#
-#     # If it's a normal image (not segmentation), apply z-score normalization
-#     if not seg:
-#         mean = np.mean(downsampled_image)
-#         std = np.std(downsampled_image)
-#         std = std if std > 0 else 1  # Prevent divide by zero
-#         downsampled_image = (downsampled_image - mean) / std
-#
-#     return downsampled_image
-#
-#
-# def extract_surface_points(voxel_data, threshold=0.5, num_points=NUM_POINTS):
-#     """
-#     Extracts mesh representation from labeled voxel data.
-#
-#     :param voxel_data: labeled volume (batch_size, x, y, z)
-#     :param threshold: voxels are 0 or 1, so pick 0.5 for this
-#     :param num_points: number of points to extract (should match template mesh size)
-#     :return: resampled surface points (batch_size, num_points, 3)
-#     """
-#     surface_points = []
-#
-#     for i in range(voxel_data.shape[0]):
-#         volume = voxel_data[i]
-#         surface_voxels = volume > threshold
-#
-#         # Extract surface using marching cubes
-#         vertices, faces, _, _ = marching_cubes(surface_voxels, level=threshold)
-#
-#         # Sample points using nearest neighbors (ensuring same # of pts as template mesh)
-#         nbrs = NearestNeighbors(n_neighbors=1, algorithm='auto').fit(vertices)
-#         bbox_min, bbox_max = vertices.min(axis=0), vertices.max(axis=0)
-#         random_points = np.random.uniform(bbox_min, bbox_max, (num_points, 3))
-#         _, indices = nbrs.kneighbors(random_points)
-#         resampled_points = vertices[indices.flatten()]
-#
-#         # Z-score normalize
-#         resampled_points_mean = resampled_points.mean(axis=0)
-#         resampled_points_std = resampled_points.std(axis=0)
-#         if np.any(resampled_points_std == 0):
-#             resampled_points_std[resampled_points_std == 0] = 1.0  # Prevent division by zero
-#
-#         resampled_points = (resampled_points - resampled_points_mean) / resampled_points_std
-#         resampled_points *= np.array(SPACE_DIRECTIONS).diagonal()  # Adjust based on voxel spacing
-#
-#         surface_points.append(resampled_points)
-#
-#     return np.array(surface_points)
+        # normalize points to be between -1 and 1 (seems to help loss to not be NaN)
+        verts = normalize_points(verts)
+        all_points.append(verts)
+
+    return torch.cat(all_points, dim=0)

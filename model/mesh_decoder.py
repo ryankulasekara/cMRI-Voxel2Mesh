@@ -17,7 +17,7 @@ class MeshDecoder(nn.Module):
         # combines x,y,z coordinates of voxels w/ the features extracted at each voxel
         self.vertex_encoder = nn.Linear(3 + config.voxel_feature_dim, 128)
 
-        # these are the layers of the graph convolutional network (GCN)
+        # these are the layers of the graph convolutional network
         self.conv1 = GCNConv(128, 256)
         self.conv2 = GCNConv(256, 256)
         self.conv3 = GCNConv(256, 256)
@@ -64,9 +64,11 @@ class MeshDecoder(nn.Module):
             xi = F.relu(self.conv3(xi, edge_index))
             xi = F.relu(self.conv4(xi, edge_index))
             displacements.append(self.displacement_head(xi))
+        displacements = torch.stack(displacements)
+        displacements = torch.nan_to_num(displacements, nan=0.0)
 
         # apply the displacements on the template mesh - clamp displacements to make sure nothing too crazy is applied
-        deformed_vertices = vertices + torch.clamp(torch.stack(displacements), -0.25, 0.25)  # [B, N, 3]
+        deformed_vertices = vertices + torch.clamp(displacements, -0.5, 0.5)  # [B, N, 3]
         return deformed_vertices
 
     def faces_to_edges(self, faces):
@@ -88,8 +90,10 @@ class MeshDecoder(nn.Module):
         if vertices.dim() == 2:
             vertices = vertices.unsqueeze(0).expand(B, -1, -1)
 
-        # normalize vertices to [-1, 1] - assumes orig. vertices are [0,1]
-        vertices_norm = (vertices - 0.5) * 2
+        # Assume vertices are in template mesh space [min, max] -> normalize to [-1,1]
+        min_v = vertices.min(dim=0, keepdim=True)[0]
+        max_v = vertices.max(dim=0, keepdim=True)[0]
+        vertices_norm = 2 * (vertices - min_v) / (max_v - min_v + 1e-6) - 1
 
         # reshape to [B, N, 1, 1, 3]
         grid = vertices_norm.unsqueeze(2).unsqueeze(2)  # Correct reshaping

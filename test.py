@@ -2,10 +2,9 @@ import torch
 import trimesh
 import pyvista as pv
 import numpy as np
-from sklearn import preprocessing
 
 from model.model import Voxel2Mesh
-from data import load_images
+from data import load_images, load_labels, extract_surface_points
 from model.template_mesh import TemplateMesh
 from config import *
 
@@ -30,7 +29,10 @@ model.eval()
 
 # load test images
 print("Loading test images...")
-test_images = load_images(TEST_IMAGES)
+test_images, headers = load_images(TEST_IMAGES)
+test_labels = load_labels(TEST_LABELS, headers)
+with torch.no_grad():
+    test_surface_points = extract_surface_points(test_labels)
 test_images_tensor = torch.tensor(test_images, dtype=torch.float32).unsqueeze(1).permute(0, 1, 3, 2, 4).to(device)
 voxel_spacing = np.array(SPACE_DIRECTIONS).diagonal()
 
@@ -41,7 +43,6 @@ with torch.no_grad():
         input_data = {'x': test_images_tensor[i].unsqueeze(0)}
         predicted_vertices = model.forward(input_data)['mesh']
         predicted_vertices = predicted_vertices.cpu().numpy().squeeze()
-        predicted_vertices *= voxel_spacing
         pv_mesh = pv.PolyData(predicted_vertices, faces_pyvista)
         pv_mesh.plot()
 
