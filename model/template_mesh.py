@@ -3,6 +3,7 @@ import trimesh
 from sklearn import preprocessing
 
 from config import TEMPLATE_MESH
+from model.mesh_utils import normalize_points
 
 
 class TemplateMesh:

@@ -32,6 +32,7 @@ val_images_tensor = torch.tensor(val_images, dtype=torch.float32).unsqueeze(1).p
 val_labels_tensor = torch.tensor(val_labels, dtype=torch.long).squeeze(1)
 
 # get surface points from the labels (marching cubes mesh)
+# note - these meshes aren't used anymore (using segmentation prediction for target meshes now)
 print("Extracting surface points from training labels...")
 with torch.no_grad():
     train_surface_points = extract_surface_points(train_labels)
@@ -58,7 +59,7 @@ scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=100, verbose=True)
 # training loop
 train_losses = []
 val_losses = []
-num_epochs = 300
+num_epochs = 250
 print("Training...")
 for epoch in range(num_epochs):
     model.train()

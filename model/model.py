@@ -6,6 +6,7 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 
 from config import NRRD_DIMENSIONS
+from data import extract_surface_points
 from model.voxel_encoder import VoxelEncoder
 from model.voxel_decoder import VoxelDecoder
 from model.mesh_decoder import MeshDecoder
@@ -35,6 +36,13 @@ class Voxel2Mesh(nn.Module):
         #     pred_vol=voxel_output['segmentation'],
         #     slice_idx=10
         # )
+        #
+        # visualize_slice(
+        #     input_vol=data['x'],
+        #     label_vol=data['y_voxels'],
+        #     pred_vol=voxel_output['segmentation'],
+        #     slice_idx=15
+        # )
 
         return {
             'mesh': mesh_output,
@@ -61,9 +69,12 @@ class Voxel2Mesh(nn.Module):
             data['y_voxels'].float()
         )
 
+        # get marching cubes from segmentation output for chamfer loss
+        target_mesh = extract_surface_points(pred['segmentation'].cpu().detach().numpy().squeeze(0))
+
         # mesh losses
         faces = self.template_mesh.get_faces().to(data['x'].device)
-        chamfer_loss = chamfer_distance(pred['mesh'], data['surface_points'])
+        chamfer_loss = chamfer_distance(pred['mesh'], target_mesh)
         edge_loss = mesh_edge_loss(pred['mesh'], faces)
         laplacian_loss = laplacian_smoothing(pred['mesh'], faces)
 
@@ -72,7 +83,7 @@ class Voxel2Mesh(nn.Module):
         # for face in self.template_mesh.get_faces():
         #     faces_pyvista.append([3, *face])
         # faces_pyvista = np.array(faces_pyvista).flatten()
-        # pv_mesh = pv.PolyData(data['surface_points'].cpu().detach().numpy().squeeze(0))
+        # pv_mesh = pv.PolyData(target_mesh.cpu().detach().numpy().squeeze(0))
         # pv_mesh.plot()
         #
         # pv_mesh = pv.PolyData(pred['mesh'].cpu().detach().numpy().squeeze(0))
@@ -81,10 +92,10 @@ class Voxel2Mesh(nn.Module):
 
         # weighted sum of losses
         total_loss = (
-                2 * chamfer_loss +
-                0.5 * ce_loss +
-                0.1 * laplacian_loss +
-                0.1 * edge_loss
+                1.5 * chamfer_loss +
+                1.2 * ce_loss +
+                1.0 * laplacian_loss +
+                0.25 * edge_loss
         )
 
         log = {

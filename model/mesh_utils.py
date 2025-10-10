@@ -2,32 +2,6 @@ import torch.nn as nn
 import torch
 
 
-# class UNetLayer(nn.Module):
-#     def __init__(self, num_channels_in, num_channels_out, ndims, batch_norm=True):
-#         super(UNetLayer, self).__init__()
-#         """
-#         U-Net layer used in voxel encoder & voxel decoder
-#         Got the bulk of this code from the voxel2mesh repo
-#         """
-#
-#
-#         conv_op = nn.Conv2d if ndims == 2 else nn.Conv3d
-#         batch_norm_op = nn.InstanceNorm2d if ndims == 2 else nn.InstanceNorm3d
-#
-#         layers = [
-#             conv_op(num_channels_in, num_channels_out, kernel_size=3, padding=1),
-#             batch_norm_op(num_channels_out) if batch_norm else nn.Identity(),
-#             nn.ReLU(),
-#             conv_op(num_channels_out, num_channels_out, kernel_size=3, padding=1),
-#             batch_norm_op(num_channels_out) if batch_norm else nn.Identity(),
-#             nn.ReLU()
-#         ]
-#
-#         self.unet_layer = nn.Sequential(*layers)
-#
-#     def forward(self, x):
-#         return self.unet_layer(x)
-
 class UNetLayer(nn.Module):
     def __init__(self, in_channels, out_channels, ndims=3, norm="instance"):
         super().__init__()
@@ -67,3 +41,20 @@ class UNetLayer(nn.Module):
         x = self.activation(x)
 
         return x
+
+
+def normalize_points(points, eps=1e-6):
+    """
+    Normalize a mesh so each dimension is within [-1,1]
+
+    :param points: array of points for each mesh (B, N, 3)
+    :param eps: prevents divide by zero
+    :return: normalized mesh points
+    """
+
+    min_val, _ = points.min(dim=1, keepdim=True)
+    max_val, _ = points.max(dim=1, keepdim=True)
+    center = (min_val + max_val) / 2
+    scale = (max_val - min_val).max(dim=2, keepdim=True)[0] + eps
+
+    return (points - center) / scale

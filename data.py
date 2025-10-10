@@ -7,7 +7,7 @@ from scipy.ndimage import zoom
 import skimage.measure
 
 from config import *
-from model.losses import normalize_points
+from model.mesh_utils import normalize_points
 
 
 # helper to match nrrd dimensions order that sitk pulls
@@ -89,7 +89,7 @@ def load_labels(file_path, headers):
         # convert to np array (still in (z,y,x) order)
         seg_np = sitk.GetArrayFromImage(seg_resampled)
 
-        # get the correct label depending on the desired segmentation
+        # get the correct label depending on the desired cardiac structure (SEG_LABEL)
         if seg_np.ndim == 4:
             seg_np = seg_np[..., SEG_LABEL]
 
@@ -160,7 +160,7 @@ def extract_surface_points(voxel_data, threshold=0.5, num_points=NUM_POINTS, spa
 
     # convert to tensor - we want to use the GPU for this since it can take while if not
     if isinstance(voxel_data, np.ndarray):
-        voxel_data = torch.tensor(voxel_data, dtype=torch.float32)
+        voxel_data = torch.tensor(voxel_data, dtype=torch.float32).to(DEVICE)
 
     # get batch size (getting surface pts from each individual volume)
     B = voxel_data.shape[0]
@@ -200,7 +200,7 @@ def extract_surface_points(voxel_data, threshold=0.5, num_points=NUM_POINTS, spa
         # convert to tensor
         verts = torch.tensor(verts, dtype=torch.float32).unsqueeze(0)
 
-        # normalize points to be between -1 and 1 (seems to help loss to not be NaN)
+        # normalize points to be between -1 and 1 (get in same coordinate space as template mesh values)
         verts = normalize_points(verts)
         all_points.append(verts)
 

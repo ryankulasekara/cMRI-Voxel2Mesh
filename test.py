@@ -24,7 +24,7 @@ faces_pyvista = np.array(faces_pyvista).flatten()
 # load trained model
 config.batch_size = 1
 model = Voxel2Mesh(config).to(device)
-model.load_state_dict(torch.load("voxel2mesh_model.pth", map_location=device))
+model.load_state_dict(torch.load("saved_models/voxel2mesh_model_RV_10242.pth", map_location=device))
 model.eval()
 
 # load test images

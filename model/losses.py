@@ -1,24 +1,10 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import numpy as np
+
+from model.mesh_utils import normalize_points
 from config import *
-
-
-def normalize_points(points, eps=1e-6):
-    """
-    Normalize a mesh so each dimension is within [-1,1]
-
-    :param points: array of points for each mesh (B, N, 3)
-    :param eps: prevents divide by zero
-    :return: normalized mesh points
-    """
-
-    min_val, _ = points.min(dim=1, keepdim=True)
-    max_val, _ = points.max(dim=1, keepdim=True)
-    center = (min_val + max_val) / 2
-    scale = (max_val - min_val).max(dim=2, keepdim=True)[0] + eps
-
-    return (points - center) / scale
 
 
 def chamfer_distance(pred_points, target_points):
@@ -26,72 +12,82 @@ def chamfer_distance(pred_points, target_points):
     Computes Chamfer Distance between predicted and target point sets.
     """
 
-    # normalize both clouds
-    pred_points = normalize_points(pred_points)
-    target_points = normalize_points(target_points)
+    # compute distances from each point in predicted pts to target pts
+    distances = torch.cdist(pred_points.to(DEVICE), target_points.to(DEVICE), p=2)
 
-    # compute distances
-    dist = torch.cdist(pred_points, target_points, p=2) + 1e-8  # (B, N, M)
+    # find nearest neighbor distances
+    min_distances, _ = torch.min(distances, dim=2)
 
-    dist_pred_to_target = dist.min(dim=2)[0]  # (B, N)
-    dist_target_to_pred = dist.min(dim=1)[0]  # (B, M)
+    # compute average of nearest neighbor distances
+    chamfer_loss = min_distances.mean(dim=1)
 
-    chamfer_loss = (dist_pred_to_target.mean() + dist_target_to_pred.mean()) / 2
     return chamfer_loss
 
 
 def mesh_edge_loss(vertices, faces):
     """
     Computes edge length loss to encourage smoothness.
+
+    vertices: (B, N, 3)
+    faces: (F, 3)
     """
+    # Move faces to same device as vertices
+    faces = faces.to(vertices.device)
 
-    # get the 3 pts that make up each face
-    v0 = vertices[:, faces[:, 0], :]
-    v1 = vertices[:, faces[:, 1], :]
-    v2 = vertices[:, faces[:, 2], :]
+    # Gather vertices for each face (B, F, 3, 3)
+    face_vertices = vertices[:, faces, :]
 
-    # get the three edges from each face
-    edge1 = torch.norm(v0 - v1, dim=-1)
-    edge2 = torch.norm(v1 - v2, dim=-1)
-    edge3 = torch.norm(v2 - v0, dim=-1)
+    # Compute edge differences
+    edge1 = face_vertices[:, :, 0, :] - face_vertices[:, :, 1, :]
+    edge2 = face_vertices[:, :, 1, :] - face_vertices[:, :, 2, :]
+    edge3 = face_vertices[:, :, 2, :] - face_vertices[:, :, 0, :]
 
-    # mean length of each edge
-    return (edge1.mean() + edge2.mean() + edge3.mean()) / 3
+    # Compute squared lengths (avoid sqrt for speed)
+    edge_len_sq = (edge1 ** 2).sum(-1) + (edge2 ** 2).sum(-1) + (edge3 ** 2).sum(-1)
+
+    # Take mean of edge lengths (add small epsilon for numerical stability)
+    loss = torch.mean(torch.sqrt(edge_len_sq / 3.0 + 1e-12))
+    return loss
 
 
 def laplacian_smoothing(vertices, faces):
     """
-    Laplacian smoothing loss to encourage smooth surfaces.
+    Laplacian smoothness loss:
+    Encourages each vertex to be close to the average of its neighbors.
+
+    vertices: (B, N, 3)
+    faces: (F, 3)
     """
-    laplacian_loss = 0
-    num_vertices = vertices.shape[1]
+    B, N, _ = vertices.shape
+    device = vertices.device
 
-    # iterate over all vertices
-    for i in range(num_vertices):
-        neighbors = set()  # Use a set to avoid duplicate neighbors
+    vertices = vertices.to(DEVICE)
+    faces = faces.to(DEVICE)
 
-        # iterate over all faces and find neighbors of vertex `i`
-        for j in range(faces.shape[1]):  # iterate over the three vertices in each face
-            # check if vertex i is part of the current face
-            if i in faces[:, j]:
-                # add the other two vertices of the face as neighbors
-                for k in range(faces.shape[1]):
-                    if faces[:, j][k] != i:
-                        neighbors.add(faces[:, j][k])
+    # Build adjacency list once
+    adjacency = [[] for _ in range(N)]
+    for f in faces:
+        adjacency[f[0]].extend([f[1].item(), f[2].item()])
+        adjacency[f[1]].extend([f[0].item(), f[2].item()])
+        adjacency[f[2]].extend([f[0].item(), f[1].item()])
 
-        # compute the Laplacian loss for vertex
-        if len(neighbors) > 0:
-            neighbor_vertices = vertices[:, list(neighbors), :]
-            # calculate the average position of neighbors
-            laplacian_loss += torch.norm(vertices[:, i, :] - neighbor_vertices.mean(dim=1))
+    loss = 0.0
+    for i, neigh in enumerate(adjacency):
+        if len(neigh) > 0:
+            neigh_idx = torch.tensor(neigh, device=device, dtype=torch.long)
+            neighbor_mean = vertices[:, neigh_idx, :].mean(dim=1)  # (B, 3)
+            loss += torch.norm(vertices[:, i, :] - neighbor_mean, dim=-1).mean()
 
-    # normalize by the number of vertices
-    return laplacian_loss / num_vertices
+    return loss / N
 
 
 def cross_entropy_loss(pred_voxels, target_voxels):
     # ensure target is float
-    target = target_voxels.float()
+    target = target_voxels.float().to(DEVICE)
+    pred_voxels = pred_voxels.to(DEVICE)
 
-    return F.binary_cross_entropy(pred_voxels, target, reduction="mean")
+    # weight '1s' higher because of class imbalance (way more 0s than 1s)
+    pos_weight = torch.tensor([3.0], device=DEVICE)
+
+    return F.binary_cross_entropy_with_logits(pred_voxels, target, reduction="mean", pos_weight=pos_weight)
 

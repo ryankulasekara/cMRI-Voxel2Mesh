@@ -5,6 +5,7 @@ from torch_geometric.nn import GCNConv, global_mean_pool
 import pyvista as pv
 import numpy as np
 
+from model.mesh_utils import normalize_points
 from model.template_mesh import TemplateMesh
 
 class MeshDecoder(nn.Module):
@@ -38,6 +39,7 @@ class MeshDecoder(nn.Module):
 
         # load the template mesh
         vertices = self.template_mesh.get_vertices().to(features.device)  # [N, 3]
+        vertices = normalize_points(vertices.unsqueeze(0)).squeeze(0)
         faces = self.template_mesh.get_faces().to(features.device)  # [F, 3]
 
         # get the batch size
