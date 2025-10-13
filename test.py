@@ -27,6 +27,10 @@ model = Voxel2Mesh(config).to(device)
 model.load_state_dict(torch.load("saved_models/voxel2mesh_model_RV_10242.pth", map_location=device))
 model.eval()
 
+model2 = Voxel2Mesh(config).to(device)
+model2.load_state_dict(torch.load("saved_models/voxel2mesh_model_LV_10242.pth", map_location=device))
+model2.eval()
+
 # load test images
 print("Loading test images...")
 test_images, headers = load_images(TEST_IMAGES)
@@ -43,6 +47,12 @@ with torch.no_grad():
         input_data = {'x': test_images_tensor[i].unsqueeze(0)}
         predicted_vertices = model.forward(input_data)['mesh']
         predicted_vertices = predicted_vertices.cpu().numpy().squeeze()
+        # predicted_vertices2 = model2.forward(input_data)['mesh'].cpu().numpy().squeeze()
+        #
+        # plotter = pv.Plotter()
+        # plotter.add_mesh(predicted_vertices, color="red", opacity=0.8)
+        # plotter.add_mesh(predicted_vertices2, color="blue", opacity=0.8)
+        # plotter.show()
         pv_mesh = pv.PolyData(predicted_vertices, faces_pyvista)
         pv_mesh.plot()
 

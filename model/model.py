@@ -41,7 +41,7 @@ class Voxel2Mesh(nn.Module):
         #     input_vol=data['x'],
         #     label_vol=data['y_voxels'],
         #     pred_vol=voxel_output['segmentation'],
-        #     slice_idx=15
+        #     slice_idx=25
         # )
 
         return {
