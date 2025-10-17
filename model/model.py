@@ -10,7 +10,7 @@ from data import extract_surface_points
 from model.voxel_encoder import VoxelEncoder
 from model.voxel_decoder import VoxelDecoder
 from model.mesh_decoder import MeshDecoder
-from model.losses import chamfer_distance, mesh_edge_loss, laplacian_smoothing, cross_entropy_loss
+from model.losses import chamfer_distance, mesh_edge_loss, laplacian_smoothing, cross_entropy_loss, normal_consistency_loss
 from model.template_mesh import TemplateMesh
 
 
@@ -23,29 +23,38 @@ class Voxel2Mesh(nn.Module):
         # initialize each component of the network
         self.voxel_encoder = VoxelEncoder(config)
         self.voxel_decoder = VoxelDecoder(config)
-        self.mesh_decoder = MeshDecoder(config)
+        self.mesh_decoders = nn.ModuleList([MeshDecoder(config) for _ in range(config.num_classes)])
 
     def forward(self, data):
         voxel_features = self.voxel_encoder(data['x'])
         voxel_output = self.voxel_decoder(voxel_features)
-        mesh_output = self.mesh_decoder(voxel_output)
+        mesh_outputs = []
 
-        # visualize_slice(
-        #     input_vol=data['x'],
-        #     label_vol=data['y_voxels'],
-        #     pred_vol=voxel_output['segmentation'],
-        #     slice_idx=10
-        # )
-        #
-        # visualize_slice(
-        #     input_vol=data['x'],
-        #     label_vol=data['y_voxels'],
-        #     pred_vol=voxel_output['segmentation'],
-        #     slice_idx=25
-        # )
+        for c in range(self.config.num_classes):
+            # Use class-specific features for each mesh decoder
+            class_specific_output = {
+                'features': voxel_output['class_features'][c],
+                'segmentation': voxel_output['segmentation']
+            }
+            mesh_outputs.append(self.mesh_decoders[c](class_specific_output))
+
+        visualize_slice(
+            input_vol=data['x'],
+            label_vol=data['y_voxels'],
+            pred_vol=voxel_output['segmentation'],
+            slice_idx=10
+        )
+
+        visualize_slice(
+            input_vol=data['x'],
+            label_vol=data['y_voxels'],
+            pred_vol=voxel_output['segmentation'],
+            slice_idx=15
+        )
+
 
         return {
-            'mesh': mesh_output,
+            'meshes': mesh_outputs,
             'segmentation': voxel_output['segmentation']
         }
 
@@ -62,93 +71,146 @@ class Voxel2Mesh(nn.Module):
         # pred['segmentation'] is the segmentation output from voxel decoder
         # pred['mesh'] is the deformed mesh output from the mesh decoder
         pred = self.forward(data)
+        faces = self.template_mesh.get_faces().to(data['x'].device)
 
         # cross-entropy loss
         ce_loss = cross_entropy_loss(
-            pred['segmentation'].squeeze(1),
-            data['y_voxels'].float()
+            pred['segmentation'],
+            data['y_voxels'].float().permute(0,2,3,1,4)
         )
 
-        # get marching cubes from segmentation output for chamfer loss
-        target_mesh = extract_surface_points(pred['segmentation'].cpu().detach().numpy().squeeze(0))
-
         # mesh losses
-        faces = self.template_mesh.get_faces().to(data['x'].device)
-        chamfer_loss = chamfer_distance(pred['mesh'], target_mesh)
-        edge_loss = mesh_edge_loss(pred['mesh'], faces)
-        laplacian_loss = laplacian_smoothing(pred['mesh'], faces)
+        chamfer_loss_total, edge_loss_total, lap_loss_total, normal_loss_total = 0, 0, 0, 0
 
-        # # debugging code
-        # faces_pyvista = []
-        # for face in self.template_mesh.get_faces():
-        #     faces_pyvista.append([3, *face])
-        # faces_pyvista = np.array(faces_pyvista).flatten()
-        # pv_mesh = pv.PolyData(target_mesh.cpu().detach().numpy().squeeze(0))
-        # pv_mesh.plot()
-        #
-        # pv_mesh = pv.PolyData(pred['mesh'].cpu().detach().numpy().squeeze(0))
-        # pv_mesh.plot()
+        for i, mesh_pred in enumerate(pred["meshes"]):
+            # extract surface from ground truth for class i
+            target_mesh = extract_surface_points(pred["segmentation"][:,i].cpu().detach().numpy())
+            chamfer_loss = chamfer_distance(mesh_pred, target_mesh)
+            edge_loss = mesh_edge_loss(mesh_pred, faces)
+            lap_loss = laplacian_smoothing(mesh_pred, faces)
+            normal_loss = normal_consistency_loss(mesh_pred, faces)
 
+            chamfer_loss_total += chamfer_loss
+            edge_loss_total += edge_loss
+            lap_loss_total += lap_loss
+            normal_loss_total += normal_loss
 
-        # weighted sum of losses
         total_loss = (
-                1.5 * chamfer_loss +
-                1.2 * ce_loss +
-                1.0 * laplacian_loss +
-                0.25 * edge_loss
+                1.0 * ce_loss +
+                0.6 * chamfer_loss_total / self.config.num_classes +
+                0.5 * edge_loss_total / self.config.num_classes +
+                2.0 * lap_loss_total / self.config.num_classes +
+                2.0 * normal_loss_total / self.config.num_classes
         )
 
         log = {
-            "loss": total_loss.item(),
-            "chamfer_loss": chamfer_loss.item(),
             "ce_loss": ce_loss.item(),
-            "edge_loss": edge_loss.item(),
-            "laplacian_loss": laplacian_loss.item()
+            "chamfer_loss": chamfer_loss_total.item(),
+            "edge_loss": edge_loss_total.item(),
+            "laplacian_loss": lap_loss_total.item(),
+            "normal_loss": normal_loss_total.item()
         }
-
         return total_loss, log
 
 
-def visualize_slice(input_vol, label_vol, pred_vol, slice_idx=None):
+def visualize_slice(input_vol, label_vol, pred_vol, slice_idx=None, class_colors=None, alpha=0.4):
     """
-    Display a slice of the image volume, its ground truth label, and predicted label
+    Visualize an MRI slice with ground truth and predicted segmentations overlaid.
+    Works for multi-class segmentations (e.g., LV = 1, RV = 2).
+    """
 
-    input_vol: array of input image volumes
-    label_vol: array of label/segmenatation volumes
-    pred_vol: array of predicted label volumes
-    slice_idx: slice along z-axis to show; default is middle slice
-    """
+    # ---- Move to numpy ----
+    if isinstance(input_vol, torch.Tensor):
+        input_vol = input_vol.detach().cpu().numpy()
+    if isinstance(label_vol, torch.Tensor):
+        label_vol = label_vol.permute(0, 2, 3, 1, 4)  # adjust to (B, Z, Y, C, X) if needed
+        label_vol = label_vol.detach().cpu().numpy()
+    if isinstance(pred_vol, torch.Tensor):
+        pred_vol = pred_vol.detach().cpu().numpy()
 
     b, _, z, y, x = input_vol.shape
-    input_vol = input_vol.squeeze()
-    label_vol = label_vol.squeeze()
-    pred_vol = pred_vol.squeeze()
+    input_vol = np.squeeze(input_vol)
+    label_vol = np.squeeze(label_vol)
+    pred_vol = np.squeeze(pred_vol)
 
-    # choose middle slice if not specified
+    # ---- Choose slice ----
     if slice_idx is None:
         slice_idx = z // 2
 
-    # get a slice of the volumes to show
-    input_slice = input_vol[: ,: , slice_idx].cpu().numpy()
-    label_slice = label_vol[:, :, slice_idx].cpu().numpy()
-    pred_slice = pred_vol[:, :, slice_idx].cpu().detach().numpy()
+    input_slice = input_vol[:, :, slice_idx]
+    label_slice = label_vol[:, :, :, slice_idx]
+    pred_slice = pred_vol[:, :, :, slice_idx]
 
-    fig, ax = plt.subplots(1, 3)
-    ax[0].imshow(input_slice, cmap='gray')
-    ax[0].set_title("Input Image")
-    ax[1].imshow(label_slice, cmap='gray')
-    ax[1].set_title("Ground Truth Label")
-    ax[2].imshow(pred_slice, cmap='gray')
-    ax[2].set_title("Predicted Segmentation")
+    label_mask = np.zeros(label_slice.shape[1:], dtype=np.int32)
+    label_mask[label_slice[0] > 0.5] = 1  # LV
+    label_mask[label_slice[1] > 0.5] = 2  # RV
+
+    pred_mask = np.zeros(pred_slice.shape[1:], dtype=np.int32)
+    pred_mask[pred_slice[0] > 0.5] = 1  # LV
+    pred_mask[pred_slice[1] > 0.5] = 2  # RV
+
+    # ---- Colors ----
+    if class_colors is None:
+        class_colors = {
+            0: (0.0, 0.0, 0.0),   # background
+            1: (1.0, 0.0, 0.0),   # LV = red
+            2: (0.0, 0.0, 1.0),   # RV = blue
+        }
+
+    def overlay_segmentation(mask, colors, alpha):
+        """Create RGBA overlay from mask."""
+        overlay = np.zeros((*mask.shape, 4))
+        for label, color in colors.items():
+            if label == 0:
+                continue
+            m = mask == label
+            overlay[m, :3] = color
+            overlay[m, 3] = alpha
+        return overlay
+
+    label_overlay = overlay_segmentation(label_mask, class_colors, alpha)
+    pred_overlay = overlay_segmentation(pred_mask, class_colors, alpha)
+
+    # ---- Plot ----
+    fig, ax = plt.subplots(1, 2, figsize=(8, 5))
+    ax[0].imshow(input_slice, cmap="gray")
+    ax[0].imshow(label_overlay)
+    ax[0].set_title("Ground Truth Labels")
+
+    ax[1].imshow(input_slice, cmap="gray")
+    ax[1].imshow(pred_overlay)
+    ax[1].set_title("Predicted Segmentation")
+
     for a in ax:
-        a.axis('off')
+        a.axis("off")
 
-    # display the fig
     plt.tight_layout()
     plt.show()
 
 
+def visualize_meshes(meshes, faces, titles=None):
+    """Visualize multiple meshes to check alignment"""
 
+    # pv.set_jupyter_backend('static')
 
+    plotter = pv.Plotter()
 
+    for i, mesh_vertices in enumerate(meshes):
+
+        # Handle tensor conversion and batch dimension
+        if isinstance(mesh_vertices, torch.Tensor):
+            mesh_vertices = mesh_vertices.detach().cpu().numpy()
+
+        # Remove batch dimension if present [B, N, 3] -> [N, 3]
+        if mesh_vertices.ndim == 3:
+            mesh_vertices = mesh_vertices[0]  # Take first batch element
+
+        # Create simple point cloud for visualization
+        cloud = pv.PolyData(mesh_vertices, faces)
+
+        # Add faces if you have them (optional)
+        # For now, just visualize as point cloud
+        plotter.add_mesh(cloud, color=['red', 'blue'][i])
+
+    plotter.show()
 

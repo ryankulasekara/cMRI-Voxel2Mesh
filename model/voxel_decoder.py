@@ -1,4 +1,3 @@
-# voxel_decoder.py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -31,9 +30,15 @@ class VoxelDecoder(nn.Module):
             eps=1e-5
         )
 
-        self.seg_head = nn.Conv3d(config.voxel_feature_dim, 1, kernel_size=1, bias=True)
+        # heads
+        self.seg_head = nn.Conv3d(config.voxel_feature_dim, config.num_classes, kernel_size=1, bias=True)
         self.feature_head = nn.Conv3d(config.voxel_feature_dim, config.voxel_feature_dim, kernel_size=1)
 
+        # feature heads for each class/chamber (instead of just 1)
+        self.class_feature_heads = nn.ModuleList([
+            nn.Conv3d(config.voxel_feature_dim, config.voxel_feature_dim, kernel_size=1)
+            for _ in range(config.num_classes)
+        ])
         nn.init.kaiming_normal_(self.seg_head.weight, mode='fan_in', nonlinearity='linear')
         nn.init.kaiming_normal_(self.feature_head.weight, mode='fan_in', nonlinearity='linear')
         self.seg_head.bias.data.zero_()
@@ -51,19 +56,23 @@ class VoxelDecoder(nn.Module):
                 x = unet_layer(x.float())
                 x = torch.clamp(x, -1e2, 1e2)
 
-            # heads
+            # main features
             features = torch.tanh(self.feature_head(x.float()))
             features = torch.clamp(features, -10, 10)
 
-            # non-normalized logits
+            # class specific features
+            class_features = []
+            for head in self.class_feature_heads:
+                class_feat = torch.tanh(head(features))
+                class_features.append(class_feat)
+
+            # segmentation predictions... tanh to scale
             seg_logits = self.seg_head(x.float())
             seg_logits = torch.clamp(seg_logits, -50, 50)
-
-            # do sigmoid to get probabilities/confidences at each voxel
-            seg = torch.sigmoid(seg_logits)
+            seg = torch.tanh(seg_logits)
 
             return {
                 "segmentation": seg,
-                "features": features
+                "features": features,
+                "class_features": class_features
             }
-
