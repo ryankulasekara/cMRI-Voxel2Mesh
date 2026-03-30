@@ -10,7 +10,7 @@ from data import extract_surface_points
 from model.voxel_encoder import VoxelEncoder
 from model.voxel_decoder import VoxelDecoder
 from model.mesh_decoder import MeshDecoder
-from model.losses import chamfer_distance, mesh_edge_loss, laplacian_smoothing, cross_entropy_loss, normal_consistency_loss
+from model.losses import chamfer_distance, mesh_edge_loss, laplacian_smoothing, cross_entropy_loss, normal_consistency_loss, dice_loss
 from model.template_mesh import TemplateMesh
 
 
@@ -23,7 +23,7 @@ class Voxel2Mesh(nn.Module):
         # initialize each component of the network
         self.voxel_encoder = VoxelEncoder(config)
         self.voxel_decoder = VoxelDecoder(config)
-        self.mesh_decoders = nn.ModuleList([MeshDecoder(config) for _ in range(config.num_classes)])
+        self.mesh_decoders = nn.ModuleList([MeshDecoder(config, c) for c in range(config.num_classes)])
 
     def forward(self, data):
         voxel_features = self.voxel_encoder(data['x'])
@@ -42,15 +42,24 @@ class Voxel2Mesh(nn.Module):
             input_vol=data['x'],
             label_vol=data['y_voxels'],
             pred_vol=voxel_output['segmentation'],
-            slice_idx=10
+            slice_idx=15
         )
 
         visualize_slice(
             input_vol=data['x'],
             label_vol=data['y_voxels'],
             pred_vol=voxel_output['segmentation'],
-            slice_idx=15
+            slice_idx=25
         )
+
+        # faces = self.template_mesh.get_faces().cpu().numpy()
+        # faces_pyvista = []
+        # for face in faces:
+        #     faces_pyvista.append([3, *face])
+        # faces_pyvista = np.array(faces_pyvista).flatten()
+        # visualize_meshes((extract_surface_points(voxel_output["segmentation"][:,0].cpu().detach().numpy()),
+        #                   extract_surface_points(voxel_output["segmentation"][:,1].cpu().detach().numpy())),
+        #                   faces=faces_pyvista)
 
 
         return {
@@ -76,15 +85,26 @@ class Voxel2Mesh(nn.Module):
         # cross-entropy loss
         ce_loss = cross_entropy_loss(
             pred['segmentation'],
-            data['y_voxels'].float().permute(0,2,3,1,4)
+            data['y_voxels'].float()
+        ) / self.config.num_classes
+
+        dsc_loss = dice_loss(
+            pred['segmentation'],
+            data['y_voxels'].float()
         )
 
         # mesh losses
         chamfer_loss_total, edge_loss_total, lap_loss_total, normal_loss_total = 0, 0, 0, 0
 
-        for i, mesh_pred in enumerate(pred["meshes"]):
-            # extract surface from ground truth for class i
-            target_mesh = extract_surface_points(pred["segmentation"][:,i].cpu().detach().numpy())
+        for c, mesh_pred in enumerate(pred["meshes"]):
+            # extract surface from ground truth for class c
+            target_mesh = extract_surface_points(pred["segmentation"][:,c].cpu().detach().numpy())
+            target_pv = pv.PolyData(target_mesh.cpu().detach().numpy().squeeze())
+            pred_pv = pv.PolyData(mesh_pred.cpu().detach().numpy().squeeze())
+            plotter = pv.Plotter()
+            plotter.add_mesh(target_pv, color='r')
+            plotter.add_mesh(pred_pv, color='b')
+            # plotter.show()
             chamfer_loss = chamfer_distance(mesh_pred, target_mesh)
             edge_loss = mesh_edge_loss(mesh_pred, faces)
             lap_loss = laplacian_smoothing(mesh_pred, faces)
@@ -96,15 +116,17 @@ class Voxel2Mesh(nn.Module):
             normal_loss_total += normal_loss
 
         total_loss = (
-                1.0 * ce_loss +
-                0.6 * chamfer_loss_total / self.config.num_classes +
-                0.5 * edge_loss_total / self.config.num_classes +
-                2.0 * lap_loss_total / self.config.num_classes +
-                2.0 * normal_loss_total / self.config.num_classes
+                0.5 * ce_loss +
+                0.75 * dsc_loss +
+                1.2 * chamfer_loss_total / self.config.num_classes +
+                0.1 * edge_loss_total / self.config.num_classes +
+                1.5 * lap_loss_total / self.config.num_classes +
+                1.5 * normal_loss_total / self.config.num_classes
         )
 
         log = {
             "ce_loss": ce_loss.item(),
+            "dice_loss": dsc_loss.item(),
             "chamfer_loss": chamfer_loss_total.item(),
             "edge_loss": edge_loss_total.item(),
             "laplacian_loss": lap_loss_total.item(),
@@ -123,7 +145,8 @@ def visualize_slice(input_vol, label_vol, pred_vol, slice_idx=None, class_colors
     if isinstance(input_vol, torch.Tensor):
         input_vol = input_vol.detach().cpu().numpy()
     if isinstance(label_vol, torch.Tensor):
-        label_vol = label_vol.permute(0, 2, 3, 1, 4)  # adjust to (B, Z, Y, C, X) if needed
+        # label_vol = label_vol.permute(0, 4, 1, 2, 3)
+        # label_vol = label_vol.permute(0, 2, 3, 1, 4)  # adjust to (B, Z, Y, C, X) if needed
         label_vol = label_vol.detach().cpu().numpy()
     if isinstance(pred_vol, torch.Tensor):
         pred_vol = pred_vol.detach().cpu().numpy()
@@ -144,17 +167,30 @@ def visualize_slice(input_vol, label_vol, pred_vol, slice_idx=None, class_colors
     label_mask = np.zeros(label_slice.shape[1:], dtype=np.int32)
     label_mask[label_slice[0] > 0.5] = 1  # LV
     label_mask[label_slice[1] > 0.5] = 2  # RV
+    # label_mask[label_slice[2] > 0.5] = 3  # AORTA
+    # label_mask[label_slice[3] > 0.5] = 4  # PULMONARY TRUNK
+    # label_mask[label_slice[4] > 0.5] = 5  # LA
+    # label_mask[label_slice[5] > 0.5] = 6  # RA
+
 
     pred_mask = np.zeros(pred_slice.shape[1:], dtype=np.int32)
-    pred_mask[pred_slice[0] > 0.5] = 1  # LV
-    pred_mask[pred_slice[1] > 0.5] = 2  # RV
+    pred_mask[pred_slice[0] > 0.0] = 1  # LV
+    pred_mask[pred_slice[1] > 0.0] = 2  # RV
+    # pred_mask[pred_slice[2] > 0.0] = 3  # AORTA
+    # pred_mask[pred_slice[3] > 0.0] = 4  # PULMONARY TRUNK
+    # pred_mask[pred_slice[4] > 0.0] = 5  # LA
+    # pred_mask[pred_slice[5] > 0.0] = 6  # RA
 
     # ---- Colors ----
     if class_colors is None:
         class_colors = {
             0: (0.0, 0.0, 0.0),   # background
-            1: (1.0, 0.0, 0.0),   # LV = red
-            2: (0.0, 0.0, 1.0),   # RV = blue
+            1: (0.75, 0.0, 0.75),   # LV
+            2: (0.0, 0.0, 1.0),   # RV
+            3: (1.0, 0.25, 0.5),   # pink
+            4: (0.0, 1.0, 0.0),   # green
+            5: (1.0, 0.75, 0.0), # orange
+            6: (0.0, 1.0, 1.0)
         }
 
     def overlay_segmentation(mask, colors, alpha):
@@ -210,7 +246,7 @@ def visualize_meshes(meshes, faces, titles=None):
 
         # Add faces if you have them (optional)
         # For now, just visualize as point cloud
-        plotter.add_mesh(cloud, color=['red', 'blue'][i])
+        plotter.add_mesh(cloud, color=['purple', 'blue', 'pink', 'green','orange', 'cyan'][i])
 
     plotter.show()
 

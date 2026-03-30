@@ -7,11 +7,13 @@ import numpy as np
 
 from model.mesh_utils import normalize_points
 from model.template_mesh import TemplateMesh
+from data import map_coordinates
 
 class MeshDecoder(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, chamber):
         super().__init__()
         self.config = config
+        self.chamber = chamber
         self.template_mesh = TemplateMesh()
 
         # Enhanced vertex encoder with more capacity
@@ -25,14 +27,18 @@ class MeshDecoder(nn.Module):
         # gcn architecture
         self.conv1 = GCNConv(128, 256)
         self.conv2 = GCNConv(256, 512)
-        self.conv3 = GCNConv(512, 256)
-        self.conv4 = GCNConv(256, 128)
+        self.conv3 = GCNConv(512, 1024)
+        self.conv4 = GCNConv(1024, 512)
+        self.conv5 = GCNConv(512, 256)
+        self.conv6 = GCNConv(256, 128)
 
         # batch norm
         self.bn1 = nn.BatchNorm1d(256)
         self.bn2 = nn.BatchNorm1d(512)
-        self.bn3 = nn.BatchNorm1d(256)
-        self.bn4 = nn.BatchNorm1d(128)
+        self.bn3 = nn.BatchNorm1d(1024)
+        self.bn4 = nn.BatchNorm1d(512)
+        self.bn5 = nn.BatchNorm1d(256)
+        self.bn6 = nn.BatchNorm1d(128)
 
         # displacement head
         self.displacement_head = nn.Sequential(
@@ -52,6 +58,7 @@ class MeshDecoder(nn.Module):
 
         # Get template mesh
         vertices = self.template_mesh.get_vertices().to(features.device)  # [N, 3]
+
         faces = self.template_mesh.get_faces().to(features.device)
 
         B = features.shape[0]
@@ -77,14 +84,16 @@ class MeshDecoder(nn.Module):
             xi2 = F.relu(self.conv2(xi1, edge_index))
             xi3 = F.relu(self.conv3(xi2, edge_index))
             xi4 = F.relu(self.conv4(xi3, edge_index))
+            xi5 = F.relu(self.conv5(xi4, edge_index))
+            xi6 = F.relu(self.conv6(xi5, edge_index))
 
-            displacements.append(self.displacement_head(xi4))
+            displacements.append(self.displacement_head(xi6))
 
         displacements = torch.stack(displacements)
         displacements = torch.nan_to_num(displacements, nan=0.0)
 
         # Apply displacements with learnable residual factor
-        deformed_vertices = vertices + torch.clamp(displacements, -1.0, 1.0)
+        deformed_vertices = vertices + torch.clamp(displacements, -2.5, 2.5)
 
         return deformed_vertices
 
@@ -102,6 +111,34 @@ class MeshDecoder(nn.Module):
         max_v = vertices.max(dim=0, keepdim=True)[0]
         vertices_norm = 2 * (vertices - min_v) / (max_v - min_v + 1e-6) - 1
 
+        # This decides scale and location for template mesh based on the chamber
+        if self.chamber == 0:  # LV - want this to be larger, located central/right side of image
+            vertices_norm /= 1.5
+            # vertices[:,1] += 0.2
+
+        elif self.chamber == 1:  # RV - want this to be larger, located central/left side of image
+            vertices_norm /= 1.5
+            # vertices[:,1] -= 0.2
+
+        elif self.chamber == 2:  # AORTA - smaller, upper, central
+            vertices_norm /= 2.5
+            vertices_norm[:, 2] += 0.2
+
+        elif self.chamber == 3:  # PULMONARY TRUNK - smaller, upper, north/central
+            vertices_norm /= 2.5
+            # vertices[:,0] -= 0.2
+            vertices_norm[:, 2] += 0.2
+
+        elif self.chamber == 4:  # LA - bigger, upper, right
+            vertices_norm /= 2
+            # vertices[:,1] += 0.2
+            vertices_norm[:, 2] += 0.2
+
+        elif self.chamber == 5:  # RA - bigger, upper, left
+            vertices_norm /= 2
+            # vertices[:,1] -= 0.2
+            vertices_norm[:, 2] += 0.2
+
         # Vertices are already in [-1,1] space, so we can use them directly
         # Just reshape for grid_sample
         grid = vertices_norm.unsqueeze(2).unsqueeze(2)  # [B, N, 1, 1, 3]
@@ -115,6 +152,7 @@ class MeshDecoder(nn.Module):
         )
 
         return features.squeeze(-1).squeeze(-1).permute(0, 2, 1)
+
 
     def faces_to_edges(self, faces):
         # we need to convert the faces into edges (like in original voxel2mesh code)

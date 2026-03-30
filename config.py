@@ -23,7 +23,6 @@ class Config:
     num_input_channels = 1
     first_layer_channels = 16
     steps = 4
-    num_classes = 2
     graph_conv_layer_count = 3
     batch_norm = True
     voxel_feature_dim = 16

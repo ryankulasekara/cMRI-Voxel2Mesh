@@ -10,6 +10,7 @@ import skimage.measure
 import config
 from config import *
 from model.mesh_utils import normalize_points
+from model.template_mesh import TemplateMesh
 
 
 # helper to match nrrd dimensions order that sitk pulls
@@ -156,13 +157,14 @@ def pad_to_size(volume, target_shape_zyx, pad_value=0, label=False):
     return volume
 
 
-def extract_surface_points(voxel_data, threshold=0.5, num_points=NUM_POINTS):
+def extract_surface_points(voxel_data, threshold=0.5, num_points=NUM_POINTS, spacing=(1.92308, 1.92308, 9.99985)):
     """
     Get marching cubes mesh from segmentations for each chamber
 
     :param voxel_data: segmentation volume
     :param threshold: level to decide between 1 or 0 for each chamber
     :param num_points: number of points to sample from marching cubes mesh
+    :param spacing: spacing between points in x,y,z directions
     """
     # convert to tensor if not already
     if isinstance(voxel_data, np.ndarray):
@@ -185,27 +187,52 @@ def extract_surface_points(voxel_data, threshold=0.5, num_points=NUM_POINTS):
             chamber_points.append(empty_verts)
             continue
 
-        # do marching cubes on segmentation volume
-        # in same coordinate space as original volume for now [(0-95), (0-95), (0-31)]
-        verts, faces = mcubes.marching_cubes(volume, threshold)
+        # resample to isotropic spacing
+        # smallest spacing as target (1.9 mm)
+        target_spacing = min(spacing)
+        zoom_factors = [s / target_spacing for s in spacing]
+        volume_iso = zoom(volume, zoom=zoom_factors, order=0)
 
-        # 'fixed' normalization of pts
-        # this maps the [96,96,32] to [(-1,1), (-1,1), (-1,1)] but doesn't center at (0,0,0)
-        # this needs to be done to keep location of chambers for multi-class approach
-        verts_normalized = map_coordinates(verts)
+        # ensure binary
+        volume_iso = (volume_iso > threshold).astype(np.uint8)
 
-        # sample points
-        if verts_normalized.shape[0] > num_points:
-            idx = np.random.choice(verts_normalized.shape[0], num_points, replace=False)
-            verts_normalized = verts_normalized[idx]
+        # marching cubes, then scale using correct spacing
+        try:
+            verts, faces, _, _ = skimage.measure.marching_cubes(volume, level=0.0)
+            # verts *= target_spacing
+        except:
+            try:
+                verts, faces, _, _ = skimage.measure.marching_cubes(volume, level=-0.5)
+                print("No segmentation for chamber", c+3)
+            except:
+                exit(0)
+
+        # sample pts to be num_points
+        # if extracted pts is greater than num_points
+        if verts.shape[0] > num_points:
+            idx = np.random.choice(verts.shape[0], num_points, replace=False)
+            verts = verts[idx]
+        # if extracted pts is less than num_points
         else:
-            repeats = num_points // verts_normalized.shape[0] + 1
-            verts_normalized = np.tile(verts_normalized, (repeats, 1))[:num_points]
+            repeats = num_points // verts.shape[0] + 1
+            verts = np.tile(verts, (repeats, 1))[:num_points]
 
-        chamber_points.append(verts_normalized)
+        # convert to tensor
+        verts = torch.tensor(verts, dtype=torch.float32).unsqueeze(0)
 
-        batch_tensor = torch.tensor(np.stack(chamber_points), dtype=torch.float32)
-        all_points.append(batch_tensor)
+        # normalize points to be between -1 and 1 (get in same coordinate space as template mesh values)
+        verts = map_coordinates(verts[0])
+        all_points.append(torch.tensor(verts))
+
+        pv_mesh = pv.PolyData(verts)
+        plotter = pv.Plotter()
+        plotter.add_mesh(pv_mesh, color="red", opacity=0.8)
+        template_mesh = TemplateMesh()
+        template_verts = template_mesh.get_vertices()
+        pv_template = pv.PolyData(template_verts.cpu().numpy())
+        plotter.add_mesh(pv_template, color="blue", opacity=0.8)
+        # plotter.show()
+
 
     return torch.cat(all_points, dim=0)
 
@@ -224,3 +251,5 @@ def map_coordinates(vertices):
     vertices_norm[:, 2] = 2.0 * (vertices[:, 2] / (grid_z - 1)) - 1.0  # z: [0,31] -> [-1,1]
 
     return vertices_norm
+
+
