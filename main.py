@@ -51,7 +51,7 @@ scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=100)
 # training loop
 train_losses = []
 val_losses = []
-num_epochs = 300
+num_epochs = 180
 start_time = time.time()
 augmenter = CardiacAugmentations(apply_augmentation_prob=0.0)
 print("\nTraining...")

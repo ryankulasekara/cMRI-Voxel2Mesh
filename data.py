@@ -13,7 +13,7 @@ from model.mesh_utils import normalize_points
 from model.template_mesh import TemplateMesh
 
 
-# helper to match nrrd dimensions order that sitk pulls
+# helper to match nrrd dimensions order... sitk has weird ordering
 TARGET_SHAPE_ZYX = (NRRD_DIMENSIONS[2], NRRD_DIMENSIONS[1], NRRD_DIMENSIONS[0], NRRD_DIMENSIONS[3])
 
 def reorient_to_identity(sitk_img, orientation="LPS"):
@@ -94,7 +94,9 @@ def load_labels(file_path, headers):
 
         # get the correct labels depending on the desired cardiac structure (SEG_LABEL)
         if seg_np.ndim == 4:
+            seg_fat = seg_np[..., 1]
             seg_np = seg_np[..., 3:5]
+            seg_np = np.concatenate((seg_np, seg_fat[..., np.newaxis]),axis=-1)
 
         # flip axes to be in (x,y,z) such that the labels align properly
         seg_np = np.transpose(pad_to_size(seg_np, TARGET_SHAPE_ZYX, pad_value=0, label=True))
@@ -139,7 +141,8 @@ def pad_to_size(volume, target_shape_zyx, pad_value=0, label=False):
                 # compute min/max along axis d
                 min_idx = nonzero_idx[d].min()
                 max_idx = nonzero_idx[d].max()
-                # Ensure crop window contains foreground and fits target
+
+                # make sure crop window contains foreground and fits target
                 start = max(0, min(min_idx, current_shape[d] - target_shape[d]))
                 end = start + target_shape[d]
             else:
@@ -149,9 +152,6 @@ def pad_to_size(volume, target_shape_zyx, pad_value=0, label=False):
             crop_slices.append(slice(start, end))
         else:
             crop_slices.append(slice(0, current_shape[d]))
-
-    # if label:
-    #     crop_slices.append(slice(0, 2))
 
     volume = volume[tuple(crop_slices)]
     return volume
@@ -193,9 +193,6 @@ def extract_surface_points(voxel_data, threshold=0.5, num_points=NUM_POINTS, spa
         zoom_factors = [s / target_spacing for s in spacing]
         volume_iso = zoom(volume, zoom=zoom_factors, order=0)
 
-        # ensure binary
-        volume_iso = (volume_iso > threshold).astype(np.uint8)
-
         # marching cubes, then scale using correct spacing
         try:
             verts, faces, _, _ = skimage.measure.marching_cubes(volume, level=0.0)
@@ -224,6 +221,7 @@ def extract_surface_points(voxel_data, threshold=0.5, num_points=NUM_POINTS, spa
         verts = map_coordinates(verts[0])
         all_points.append(torch.tensor(verts))
 
+        # debugging
         pv_mesh = pv.PolyData(verts)
         plotter = pv.Plotter()
         plotter.add_mesh(pv_mesh, color="red", opacity=0.8)

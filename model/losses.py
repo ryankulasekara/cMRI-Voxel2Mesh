@@ -34,69 +34,63 @@ def mesh_edge_loss(vertices, faces):
     vertices: (B, N, 3)
     faces: (F, 3)
     """
-    # Move faces to same device as vertices
+    # move to gpu
     faces = faces.to(vertices.device)
 
-    # Gather vertices for each face (B, F, 3, 3)
+    # get vertices corresponding to each face
     face_vertices = vertices[:, faces, :]
 
-    # Compute edge differences
+    # calculate edge differences from each vertex
     edge1 = face_vertices[:, :, 0, :] - face_vertices[:, :, 1, :]
     edge2 = face_vertices[:, :, 1, :] - face_vertices[:, :, 2, :]
     edge3 = face_vertices[:, :, 2, :] - face_vertices[:, :, 0, :]
 
-    # Compute squared lengths (avoid sqrt for speed)
+    # euclidean distance for edge lengths
     edge_len_sq = (edge1 ** 2).sum(-1) + (edge2 ** 2).sum(-1) + (edge3 ** 2).sum(-1)
-
-    # Take mean of edge lengths (add small epsilon for numerical stability)
     loss = torch.mean(torch.sqrt(edge_len_sq / 3.0 + 1e-12))
+
     return loss
 
 
 def laplacian_smoothing(vertices, faces):
     """
-    Vectorized Laplacian smoothing using adjacency matrix
-    vertices: (B, N, 3)
-    faces: (F, 3)
+    Vectorized Laplacian smoothing using adjacency matrix for better speed
+
+    :param vertices: (B, N, 3)
+    :param faces: (F, 3)
     """
     B, N, _ = vertices.shape
     device = vertices.device
 
-    # Build adjacency matrix ONCE (could precompute this)
+    # make adjacency & degree matrices
     with torch.no_grad():
-        # Create edge list from faces
+        # make edge list from faces
         edges = torch.cat([
             faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]
         ], dim=0)
 
-        # Remove duplicates and self-loops
-        edges = edges[edges[:, 0] != edges[:, 1]]  # Remove self-loops
-        edges = torch.unique(edges, dim=0)  # Remove duplicates
+        # get rid of duplicates
+        edges = edges[edges[:, 0] != edges[:, 1]]
+        edges = torch.unique(edges, dim=0)
 
-        # Create sparse adjacency matrix
+        # make adjacency matrix
         row = torch.cat([edges[:, 0], edges[:, 1]])
         col = torch.cat([edges[:, 1], edges[:, 0]])
 
-        # Create degree matrix (number of neighbors per vertex)
+        # make degree matrix (# of neighbors for each vertex)
         degree = torch.zeros(N, device=device)
         degree.scatter_add_(0, row, torch.ones_like(row, dtype=torch.float))
 
-        # Avoid division by zero for isolated vertices
+        # make sure not to divide by zero... was having issues w/ instability
         degree = torch.clamp(degree, min=1.0)
 
-    # Compute neighbor means using sparse operations
+    # average distance from centroid of neighbors
     neighbor_sum = torch.zeros(B, N, 3, device=device)
-
-    # Sum contributions from neighbors (both directions due to symmetric edges)
     neighbor_sum.index_add_(1, row, vertices[:, col])
-
-    # Compute means
     neighbor_means = neighbor_sum / degree.unsqueeze(0).unsqueeze(-1)
-
-    # Laplacian loss: vertex - mean_of_neighbors
     loss = torch.norm(vertices - neighbor_means, dim=-1)
 
-    # Average over vertices and batch
+    # average over all vertices
     return loss.mean()
 
 
@@ -113,7 +107,7 @@ def cross_entropy_loss(pred_voxels, target_voxels):
     ce_loss = 0
     for c in range(config.num_classes):
         if c > 1:
-            pos_weight = torch.tensor([14.0], device=DEVICE)
+            pos_weight = torch.tensor([2.0], device=DEVICE)
         else:
             pos_weight = torch.tensor([1.0], device=DEVICE)
         ce_loss += F.binary_cross_entropy_with_logits(pred_voxels[:, c], target[:, c], pos_weight=pos_weight)
