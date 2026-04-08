@@ -8,6 +8,7 @@ class VoxelEncoder(nn.Module):
         self.config = config
         self.max_pool = nn.MaxPool3d(2) if config.ndims == 3 else nn.MaxPool2d(2)
 
+        # down layers for unet... just convs
         downs = [UNetLayer(config.num_input_channels, config.first_layer_channels, config.ndims)]
         for i in range(1, config.steps + 1):
             downs.append(UNetLayer(
@@ -25,7 +26,8 @@ class VoxelEncoder(nn.Module):
                 if i > 0:
                     x = self.max_pool(x.float()).float()
                 x = unet_layer(x.float())
-                # keep values in a sane range
+
+                # keep values in a sane range... was having issues with some values blowing up
                 x = torch.clamp(x, -1e2, 1e2)
                 down_outputs.append(x)
             return down_outputs

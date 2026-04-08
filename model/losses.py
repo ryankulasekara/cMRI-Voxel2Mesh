@@ -11,7 +11,10 @@ from config import *
 
 def chamfer_distance(pred_points, target_points):
     """
-    Computes Chamfer Distance between predicted and target point sets.
+    Computes Chamfer Distance between predicted and target meshes
+
+    :param pred_points: model's mesh output
+    :param target_points: target mesh (marching cubes of segmentation output)
     """
 
     # compute distances from each point in predicted pts to target pts
@@ -106,10 +109,21 @@ def cross_entropy_loss(pred_voxels, target_voxels):
 
     ce_loss = 0
     for c in range(config.num_classes):
-        if c > 1:
+        if c == 0:
+            pos_weight = torch.tensor([1.5], device=DEVICE)
+        elif c == 2:
+            pos_weight = torch.tensor([4.0], device=DEVICE)
+        elif c == 3:
+            pos_weight = torch.tensor([4.0], device=DEVICE)
+        elif c == 4:
+            pos_weight = torch.tensor([4.0], device=DEVICE)
+        elif c == 5:
+            pos_weight = torch.tensor([6.0], device=DEVICE)
+        elif c == 6:
             pos_weight = torch.tensor([2.0], device=DEVICE)
         else:
-            pos_weight = torch.tensor([1.0], device=DEVICE)
+            pos_weight = torch.tensor([1.2], device=DEVICE)
+    #     pos_weight = torch.tensor([1.0], device=DEVICE)
         ce_loss += F.binary_cross_entropy_with_logits(pred_voxels[:, c], target[:, c], pos_weight=pos_weight)
 
     return ce_loss
@@ -117,29 +131,28 @@ def cross_entropy_loss(pred_voxels, target_voxels):
 
 def dice_loss(pred, target, smooth=1e-6):
     """
-    Dice loss for better small structure segmentation
+    Use DSC for loss w/ cross-entropy... trying this to make model better for upper chambers
     """
-    pred = torch.sigmoid(pred) > 0.5  # Convert logits to probabilities
+    pred = pred > 0.0
 
-    # Flatten spatial dimensions
-    pred_flat = pred.view(pred.shape[0], pred.shape[1], -1)  # [B, C, H*W*D]
-    target_flat = target.view(target.shape[0], target.shape[1], -1)  # [B, C, H*W*D]
+    pred_flat = pred.view(pred.shape[0], pred.shape[1], -1)
+    target_flat = target.view(target.shape[0], target.shape[1], -1)
 
-    intersection = (pred_flat * target_flat).sum(dim=2)  # [B, C]
-    union = pred_flat.sum(dim=2) + target_flat.sum(dim=2)  # [B, C]
+    intersection = (pred_flat * target_flat).sum(dim=2)
+    union = pred_flat.sum(dim=2) + target_flat.sum(dim=2)
 
-    dice = (2. * intersection + smooth) / (union + smooth)  # [B, C]
-    return 1 - dice.mean(dim=1)  # [C] - per-class dice loss
+    dice = (2. * intersection + smooth) / (union + smooth)
+    return 1 - dice.mean(dim=1)
 
 def normal_consistency_loss(vertices, faces):
     """
-    Ultra-fast version using advanced indexing.
+    Normals from each face, compare angles
     """
     vertices = vertices.to(DEVICE).squeeze(0)
     faces = faces.to(DEVICE)
 
     # Compute face normals
-    v0, v1, v2 = vertices[faces].unbind(1)  # Each: (F, 3)
+    v0, v1, v2 = vertices[faces].unbind(1)
     face_normals = torch.cross(v1 - v0, v2 - v0, dim=1)
     face_normals = torch.nn.functional.normalize(face_normals, dim=1, eps=1e-8)
 
@@ -148,12 +161,12 @@ def normal_consistency_loss(vertices, faces):
         torch.stack([faces[:, 0], faces[:, 1]], dim=1),
         torch.stack([faces[:, 1], faces[:, 2]], dim=1),
         torch.stack([faces[:, 2], faces[:, 0]], dim=1)
-    ], dim=0)  # (3, F, 2)
+    ], dim=0)
 
-    edges = edges.reshape(-1, 2)  # (3F, 2)
+    edges = edges.reshape(-1, 2)
     edges_sorted, _ = torch.sort(edges, dim=1)
 
-    # Use unique_consecutive for better performance on sorted edges
+    # Sort edges, get rid of duplicates
     edges_sorted, sort_idx = torch.sort(edges_sorted, dim=0)
     unique_edges, inverse_idx, counts = torch.unique(
         edges_sorted,
@@ -166,10 +179,10 @@ def normal_consistency_loss(vertices, faces):
     if not manifold_mask.any():
         return torch.tensor(0.0, device=DEVICE)
 
-    # Vectorized face pair finding
+    # find face pairs
     manifold_edge_indices = torch.where(manifold_mask)[0]
 
-    # For each manifold edge, get the two face indices
+    # get indices for faces
     edge_occurrences = []
     for edge_idx in manifold_edge_indices:
         occ = torch.where(inverse_idx == edge_idx)[0]
@@ -178,10 +191,11 @@ def normal_consistency_loss(vertices, faces):
     if not edge_occurrences:
         return torch.tensor(0.0, device=DEVICE)
 
-    edge_occurrences = torch.stack(edge_occurrences)  # (E_manifold, 2)
-    face_pairs = edge_occurrences // 3  # Convert edge indices to face indices
+    # convert face indices to edge indices
+    edge_occurrences = torch.stack(edge_occurrences)
+    face_pairs = edge_occurrences // 3
 
-    # Compute loss vectorized
+    # compute loss
     n1 = face_normals[face_pairs[:, 0]]
     n2 = face_normals[face_pairs[:, 1]]
     dots = (n1 * n2).sum(dim=1)

@@ -1,9 +1,7 @@
-import torch
 import numpy as np
 import pyvista as pv
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader, TensorDataset
-from pathlib import Path
 
 from config import *
 from data import load_images, load_labels, map_coordinates
@@ -30,10 +28,14 @@ def visualize_segmentation_slices(image, label, prediction, slice_indices):
 
     # colormap
     class_colors = {
-        0: (0.0, 0.0, 0.0),  # background
-        1: (0.75, 0.0, 0.75),  # LV
-        2: (0.0, 0.0, 1.0),  # RV
-        3: (0.8, 0.8, 0.0),  # FAT (if present)
+        0: (0.0, 0.0, 0.0),   # background
+        1: (0.75, 0.0, 0.75),   # LV
+        2: (0.0, 0.0, 1.0),   # RV
+        3: (1.0, 0.0, 1.0),   # AORTA
+        4: (0.01, 0.75, 0.0),   # PT
+        5: (1.0, 0.46, 0.09),  # LA
+        6: (0.15, 0.63, 0.68), # RA
+        7: (0.8, 0.8, 0.0),   # FAT
     }
 
     def overlay_segmentation(mask, colors, alpha=0.5):
@@ -94,7 +96,7 @@ def visualize_segmentation_slices(image, label, prediction, slice_indices):
     return fig
 
 
-def create_marching_cubes_mesh(segmentation, class_idx, threshold=0.5):
+def create_marching_cubes_mesh(segmentation, class_idx, threshold=0.0):
     """
     Create marching cubes mesh for a specific class from segmentation volume
 
@@ -144,6 +146,10 @@ def visualize_meshes_combined(predicted_meshes, segmentation, template_faces):
         mesh_colors = {
             0: 'purple',  # LV
             1: 'blue',  # RV
+            2: 'pink',
+            3: 'green',
+            4: 'orange',
+            5: 'cyan'
         }
 
         # meshes from model output
@@ -162,7 +168,7 @@ def visualize_meshes_combined(predicted_meshes, segmentation, template_faces):
             plotter.add_mesh(mesh, color=color, opacity=1.0, label=f'Chamber {i}', show_edges=False)
 
         # add marching cubes from fat segmentation labels
-        fat_class_idx = 2
+        fat_class_idx = 6
         if segmentation.shape[1] > fat_class_idx:
             fat_verts, fat_faces = create_marching_cubes_mesh(segmentation, fat_class_idx)
 
@@ -181,7 +187,7 @@ def visualize_meshes_combined(predicted_meshes, segmentation, template_faces):
                 else:
                     fat_mesh = pv.PolyData(fat_verts)
 
-                plotter.add_mesh(fat_mesh, color='yellow', opacity=0.4, label='Fat (Marching Cubes)', show_edges=False)
+                plotter.add_mesh(fat_mesh, color='yellow', opacity=0.5, label='Fat (Marching Cubes)', show_edges=False)
 
         # plot
         plotter.add_axes()

@@ -14,6 +14,7 @@ class VoxelDecoder(nn.Module):
             align_corners=False,
         )
 
+        # up layers for unet
         ups = []
         for i in range(config.steps, 0, -1):
             ups.append(UNetLayer(

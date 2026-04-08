@@ -95,10 +95,19 @@ def load_labels(file_path, headers):
         # get the correct labels depending on the desired cardiac structure (SEG_LABEL)
         if seg_np.ndim == 4:
             seg_fat = seg_np[..., 1]
+            seg_aorta = seg_np[..., 5]
+            seg_pt = seg_np[..., 6]
+            seg_la = seg_np[..., 7]
+            seg_ra = seg_np[..., 8]
             seg_np = seg_np[..., 3:5]
+
+            seg_np = np.concatenate((seg_np, seg_aorta[..., np.newaxis]), axis=-1)
+            seg_np = np.concatenate((seg_np, seg_pt[..., np.newaxis]),axis=-1)
+            seg_np = np.concatenate((seg_np, seg_la[..., np.newaxis]),axis=-1)
+            seg_np = np.concatenate((seg_np, seg_ra[..., np.newaxis]),axis=-1)
             seg_np = np.concatenate((seg_np, seg_fat[..., np.newaxis]),axis=-1)
 
-        # flip axes to be in (x,y,z) such that the labels align properly
+        # flip axes to be in (x,y,z) so that the labels align properly
         seg_np = np.transpose(pad_to_size(seg_np, TARGET_SHAPE_ZYX, pad_value=0, label=True))
         labels.append(np.flipud(np.rot90(seg_np)))
 
@@ -200,7 +209,7 @@ def extract_surface_points(voxel_data, threshold=0.5, num_points=NUM_POINTS, spa
         except:
             try:
                 verts, faces, _, _ = skimage.measure.marching_cubes(volume, level=-0.5)
-                print("No segmentation for chamber", c+3)
+                print("No segmentation for chamber", c)
             except:
                 exit(0)
 
@@ -222,13 +231,13 @@ def extract_surface_points(voxel_data, threshold=0.5, num_points=NUM_POINTS, spa
         all_points.append(torch.tensor(verts))
 
         # debugging
-        pv_mesh = pv.PolyData(verts)
-        plotter = pv.Plotter()
-        plotter.add_mesh(pv_mesh, color="red", opacity=0.8)
-        template_mesh = TemplateMesh()
-        template_verts = template_mesh.get_vertices()
-        pv_template = pv.PolyData(template_verts.cpu().numpy())
-        plotter.add_mesh(pv_template, color="blue", opacity=0.8)
+        # pv_mesh = pv.PolyData(verts)
+        # plotter = pv.Plotter()
+        # plotter.add_mesh(pv_mesh, color="red", opacity=0.8)
+        # template_mesh = TemplateMesh()
+        # template_verts = template_mesh.get_vertices()
+        # pv_template = pv.PolyData(template_verts.cpu().numpy())
+        # plotter.add_mesh(pv_template, color="blue", opacity=0.8)
         # plotter.show()
 
 
@@ -244,6 +253,8 @@ def map_coordinates(vertices):
     vertices_norm = np.zeros_like(vertices)
 
     # map each point on [96,96,32] grid to a point in [(-1,1),(-1,1),(-1,1)] grid
+    # this is super important... makes sure marching cubes meshes are in the same space as the MRI
+    # therefore, different chambers will still have the same orientation with each other
     vertices_norm[:, 0] = 2.0 * (vertices[:, 0] / (grid_x - 1)) - 1.0  # x: [0,95] -> [-1,1]
     vertices_norm[:, 1] = 2.0 * (vertices[:, 1] / (grid_y - 1)) - 1.0  # y: [0,95] -> [-1,1]
     vertices_norm[:, 2] = 2.0 * (vertices[:, 2] / (grid_z - 1)) - 1.0  # z: [0,31] -> [-1,1]

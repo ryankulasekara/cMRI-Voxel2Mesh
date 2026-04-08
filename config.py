@@ -10,23 +10,22 @@ TEMPLATE_MESH = "spheres\icosahedron_2562.obj"
 
 # Global variables
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-NRRD_DIMENSIONS = (96, 96, 32, 3)  # size to resize images & labels to
+NRRD_DIMENSIONS = (96, 96, 32, 7)  # size to resize images & labels to
 SEG_LABEL = 3  # '3' corresponds to left ventricle in our .seg.nrrd files
-NUM_POINTS = 2562
-# SPACE_DIRECTIONS = [(-1.9230799999999997,-0,0), (-0,-1.9230799999999997,-0), (0,-0,5.0000273333706708)]
+NUM_POINTS = 5124
 SPACE_DIRECTIONS = [(1.9230799999999997,-0,0), (-0,1.9230799999999997,-0), (0,-0,9.99985)]
 
 class Config:
-    num_classes = 3 # for now, do both LV and RV, and fat
-    num_mesh_classes = 2 # LV and RV
-    fat_class_index = 2
+    num_classes = 7
+    num_mesh_classes = 6
+    fat_class_index = 6
     ndims = 3
     batch_size = 1
     num_input_channels = 1
-    first_layer_channels = 16
+    first_layer_channels = 64
     steps = 4
     graph_conv_layer_count = 3
     batch_norm = True
-    voxel_feature_dim = 16
+    voxel_feature_dim = 64
 
 config = Config()

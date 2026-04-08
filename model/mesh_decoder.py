@@ -16,7 +16,8 @@ class MeshDecoder(nn.Module):
         self.chamber = chamber
         self.template_mesh = TemplateMesh()
 
-        # Enhanced vertex encoder with more capacity
+        # vertex encoder... maybe change this in the future?
+        # seems like the easiest way to correlate features & coordinates
         self.vertex_encoder = nn.Sequential(
             nn.Linear(3 + config.voxel_feature_dim, 256),
             nn.ReLU(),

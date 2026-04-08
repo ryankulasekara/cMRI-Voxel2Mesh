@@ -119,8 +119,8 @@ class Voxel2Mesh(nn.Module):
             normal_loss_total += normal_loss
 
         total_loss = (
-                0.5 * ce_loss +
-                0.75 * dsc_loss +
+                0.6 * ce_loss +
+                0.5 * dsc_loss +
                 1.2 * chamfer_loss_total / self.config.num_mesh_classes +
                 0.1 * edge_loss_total / self.config.num_mesh_classes +
                 1.5 * lap_loss_total / self.config.num_mesh_classes +
@@ -173,19 +173,40 @@ def visualize_slice(input_vol, label_vol, pred_vol, slice_idx=None, alpha=0.4):
     label_mask = np.zeros(label_slice.shape[1:], dtype=np.int32)
     label_mask[label_slice[0] > 0.5] = 1  # LV
     label_mask[label_slice[1] > 0.5] = 2  # RV
-    label_mask[label_slice[2] > 0.5] = 3  # FAT
+    label_mask[label_slice[2] > 0.5] = 3  # AORTA
+    label_mask[label_slice[3] > 0.5] = 4  # PT
+    label_mask[label_slice[4] > 0.5] = 5  # LA
+    label_mask[label_slice[5] > 0.5] = 6  # RA
+    label_mask[label_slice[6] > 0.5] = 7  # FAT
 
-    pred_mask = np.zeros(pred_slice.shape[1:], dtype=np.int32)
-    pred_mask[pred_slice[0] > 0.0] = 1  # LV
-    pred_mask[pred_slice[1] > 0.0] = 2  # RV
-    pred_mask[pred_slice[2] > 0.0] = 3  # FAT
+    if pred_slice.ndim == 3:
+        # Get class with maximum probability
+        max_probs = np.max(pred_slice, axis=0)
+        pred_mask = np.argmax(pred_slice, axis=0) + 1  # +1 because 0 is background
+        # Only assign class if max probability > 0.0
+        pred_mask[max_probs <= 0.0] = 0
+    else:
+        pred_mask = np.zeros(pred_slice.shape[1:], dtype=np.int32)
+        # Get class with highest probability for each pixel
+        for h in range(pred_slice.shape[1]):
+            for w in range(pred_slice.shape[2]):
+                class_probs = pred_slice[:, h, w]
+                max_class = np.argmax(class_probs)
+                if class_probs[max_class] > 0.0:
+                    pred_mask[h, w] = max_class + 1
+                else:
+                    pred_mask[h, w] = 0
 
     # colormap
     class_colors = {
         0: (0.0, 0.0, 0.0),   # background
-        1: (0.75, 0.0, 0.75),   # LV
+        1: (0.6, 0.0, 0.8),   # LV
         2: (0.0, 0.0, 1.0),   # RV
-        3: (0.8, 0.8, 0.0),   # FAT
+        3: (1.0, 0.0, 1.0),   # AORTA
+        4: (0.01, 0.75, 0.0),   # PT
+        5: (1.0, 0.46, 0.09),  # LA
+        6: (0.15, 0.63, 0.68), # RA
+        7: (0.8, 0.8, 0.0),   # FAT
     }
 
     # overlay colormap onto slice
@@ -229,25 +250,20 @@ def visualize_meshes(meshes, faces, titles=None):
     :return:
     """
 
-    # pv.set_jupyter_backend('static')
-
     plotter = pv.Plotter()
 
     for i, mesh_vertices in enumerate(meshes):
 
-        # Handle tensor conversion and batch dimension
+        # convert to numpy
         if isinstance(mesh_vertices, torch.Tensor):
             mesh_vertices = mesh_vertices.detach().cpu().numpy()
 
-        # Remove batch dimension if present [B, N, 3] -> [N, 3]
+        # get rid of batch dim
         if mesh_vertices.ndim == 3:
-            mesh_vertices = mesh_vertices[0]  # Take first batch element
+            mesh_vertices = mesh_vertices[0]
 
-        # Create simple point cloud for visualization
+        # create meshes
         cloud = pv.PolyData(mesh_vertices, faces)
-
-        # Add faces if you have them (optional)
-        # For now, just visualize as point cloud
         plotter.add_mesh(cloud, color=['purple', 'blue', 'pink', 'green','orange', 'cyan'][i])
 
     plotter.show()

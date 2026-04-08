@@ -44,14 +44,14 @@ val_loader = DataLoader(val_dataset, batch_size=config.batch_size, shuffle=False
 
 # initialize model, optimizer, & scheduler
 model = Voxel2Mesh(config).to(device)
-optimizer = optim.Adam(model.parameters(), lr=1e-4)
+optimizer = optim.Adam(model.parameters(), lr=5e-5)
 scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=100)
 # scheduler = CosineAnnealingLR(optimizer, T_max=50, eta_min=1e-6)
 
 # training loop
 train_losses = []
 val_losses = []
-num_epochs = 180
+num_epochs = 400
 start_time = time.time()
 augmenter = CardiacAugmentations(apply_augmentation_prob=0.0)
 print("\nTraining...")
