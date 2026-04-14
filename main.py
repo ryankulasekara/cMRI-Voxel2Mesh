@@ -2,14 +2,14 @@ import torch
 import numpy as np
 import torch.optim as optim
 from sklearn.model_selection import train_test_split
-from torch.optim.lr_scheduler import ReduceLROnPlateau, CosineAnnealingLR
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader, TensorDataset
 import matplotlib.pyplot as plt
 import time
 
 from config import *
 from data import load_images, load_labels, extract_surface_points
-from model.model import Voxel2Mesh, visualize_meshes
+from model.model import Voxel2Mesh, visualize_meshes, get_loss_weights
 from model.template_mesh import TemplateMesh
 from model.augmentations import CardiacAugmentations
 
@@ -44,18 +44,25 @@ val_loader = DataLoader(val_dataset, batch_size=config.batch_size, shuffle=False
 
 # initialize model, optimizer, & scheduler
 model = Voxel2Mesh(config).to(device)
-optimizer = optim.Adam(model.parameters(), lr=5e-5)
-scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=100)
-# scheduler = CosineAnnealingLR(optimizer, T_max=50, eta_min=1e-6)
+optimizer = optim.Adam(model.parameters(), lr=1e-4)
+scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=50)
 
-# training loop
+# training loop parameters
 train_losses = []
 val_losses = []
-num_epochs = 400
+
+# number of epochs to only do segmentation (before training mesh)
+warmup_epochs = 2
+
+# total epochs
+num_epochs = 250
+
+# training loop
 start_time = time.time()
-augmenter = CardiacAugmentations(apply_augmentation_prob=0.0)
+augmenter = CardiacAugmentations(apply_augmentation_prob=0.85)
 print("\nTraining...")
 for epoch in range(num_epochs):
+    loss_weights = get_loss_weights(epoch, num_epochs, warmup_epochs)
     model.train()
     train_loss = 0.0
     scaler = torch.cuda.amp.GradScaler()
@@ -64,12 +71,12 @@ for epoch in range(num_epochs):
     # train w/ training DataLoader
     for images, labels in train_loader:
         images, labels = images.to(device), labels.to(device)
-        # images, labels = augmenter(images, labels)
+        images, labels = augmenter(images, labels)
 
         optimizer.zero_grad()
         # was running out of memory on gpu so doing this w/ autocast
         with torch.cuda.amp.autocast():
-            loss, log = model.loss({'x': images, 'y_voxels': labels})
+            loss, log = model.loss({'x': images, 'y_voxels': labels}, loss_weights=loss_weights, epoch=epoch)
 
         scaler.scale(loss).backward()
         scaler.step(optimizer)
@@ -89,7 +96,7 @@ for epoch in range(num_epochs):
 
             # was running out of memory on gpu so doing this w/ autocast
             with torch.cuda.amp.autocast():
-                loss, _ = model.loss({'x': images, 'y_voxels': labels})
+                loss, _ = model.loss({'x': images, 'y_voxels': labels}, loss_weights=loss_weights, epoch=epoch)
                 val_loss += loss.item()
 
 
@@ -124,13 +131,3 @@ plt.title('Training and Validation Loss per Epoch')
 plt.legend()
 plt.grid(True)
 plt.show()
-
-# visualize mesh outputs
-template_mesh = TemplateMesh()
-faces = template_mesh.get_faces().cpu().numpy()
-faces_pyvista = []
-for face in faces:
-    faces_pyvista.append([3, *face])
-faces_pyvista = np.array(faces_pyvista).flatten()
-pred = model({'x': images, 'y_voxels': labels})
-visualize_meshes(pred['meshes'], faces_pyvista)

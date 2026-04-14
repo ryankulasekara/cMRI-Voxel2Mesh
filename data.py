@@ -24,6 +24,7 @@ def reorient_to_identity(sitk_img, orientation="LPS"):
     :param orientation: default orientation
     :return: reoriented segmentation
     """
+
     orient_filter = sitk.DICOMOrientImageFilter()
     orient_filter.SetDesiredCoordinateOrientation(orientation)
     return orient_filter.Execute(sitk_img)
@@ -193,7 +194,7 @@ def extract_surface_points(voxel_data, threshold=0.5, num_points=NUM_POINTS, spa
         if volume.sum() == 0:
             # empty list of pts
             empty_verts = np.zeros((num_points, 3))
-            chamber_points.append(empty_verts)
+            all_points.append(empty_verts)
             continue
 
         # resample to isotropic spacing
@@ -211,7 +212,7 @@ def extract_surface_points(voxel_data, threshold=0.5, num_points=NUM_POINTS, spa
                 verts, faces, _, _ = skimage.measure.marching_cubes(volume, level=-0.5)
                 print("No segmentation for chamber", c)
             except:
-                exit(0)
+                verts, faces, _, _ = skimage.measure.marching_cubes(volume, level=-1.0)
 
         # sample pts to be num_points
         # if extracted pts is greater than num_points

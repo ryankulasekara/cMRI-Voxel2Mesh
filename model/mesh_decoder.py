@@ -55,32 +55,29 @@ class MeshDecoder(nn.Module):
         self.residual_factor = nn.Parameter(torch.tensor(0.1))
 
     def forward(self, voxel_output):
-        features = voxel_output['features']  # [B, 16, D, H, W]
+        # get feature vector from voxel decoder
+        features = voxel_output['features']
 
-        # Get template mesh
-        vertices = self.template_mesh.get_vertices().to(features.device)  # [N, 3]
-
+        # get template mesh
+        vertices = self.template_mesh.get_vertices().to(features.device)
         faces = self.template_mesh.get_faces().to(features.device)
-
         B = features.shape[0]
 
-        # Sample features with proper coordinate mapping
+        # sample features w proper coordinate mapping
         vertex_features = self.sample_voxel_features(voxel_output, vertices)
-
-        # Prepare GCN input
         edge_index = self.faces_to_edges(faces)
         vertex_coords = vertices.unsqueeze(0).expand(B, -1, -1)
 
-        # Concatenate coordinates and features
+        # concatenate coordinates and features into single feature vector
         x = torch.cat([vertex_coords, vertex_features], dim=-1)
         x = self.vertex_encoder(x)
 
-        # GCN with residual connections and batch norm
+        # GCN w residual connections
         displacements = []
         for i in range(B):
             xi = x[i]
 
-            # GCN layers with batch norm
+            # GCN layers
             xi1 = F.relu(self.conv1(xi, edge_index))
             xi2 = F.relu(self.conv2(xi1, edge_index))
             xi3 = F.relu(self.conv3(xi2, edge_index))
@@ -90,29 +87,33 @@ class MeshDecoder(nn.Module):
 
             displacements.append(self.displacement_head(xi6))
 
+        # get displacements... if nan, change to 0 for stability
         displacements = torch.stack(displacements)
         displacements = torch.nan_to_num(displacements, nan=0.0)
 
-        # Apply displacements with learnable residual factor
+        # apply displacements to template mesh vertices
         deformed_vertices = vertices + torch.clamp(displacements, -2.5, 2.5)
 
         return deformed_vertices
 
     def sample_voxel_features(self, voxel_output, vertices):
         """
-        Sample features using the same [-1,1] coordinate system
-        Assumes vertices are already in [-1,1] normalized space
+        Sample features from volume to the same [-1,1] coordinate system that vertices are in
+
+        :param voxel_output: output from voxel decoder
+        :param vertices: template mesh vertices
         """
         B, C, D, H, W = voxel_output['features'].shape
 
         if vertices.dim() == 2:
             vertices = vertices.unsqueeze(0).expand(B, -1, -1)
 
+        # make sure template mesh vertices are in [-1,1] space
         min_v = vertices.min(dim=0, keepdim=True)[0]
         max_v = vertices.max(dim=0, keepdim=True)[0]
         vertices_norm = 2 * (vertices - min_v) / (max_v - min_v + 1e-6) - 1
 
-        # This decides scale and location for template mesh based on the chamber
+        # this logic decides scale and location for template mesh based on the chamber
         if self.chamber == 0:  # LV - want this to be larger, located central/right side of image
             vertices_norm /= 1.5
             # vertices[:,1] += 0.2
@@ -140,10 +141,12 @@ class MeshDecoder(nn.Module):
             # vertices[:,1] -= 0.2
             vertices_norm[:, 2] += 0.2
 
-        # Vertices are already in [-1,1] space, so we can use them directly
-        # Just reshape for grid_sample
-        grid = vertices_norm.unsqueeze(2).unsqueeze(2)  # [B, N, 1, 1, 3]
+        # vertices are already in [-1,1] space, so we can use them directly
+        # just reshape to get dims right for grid_sample
+        grid = vertices_norm.unsqueeze(2).unsqueeze(2)
 
+        # TODO: this grid sample function is the easiest way I could find to sample the voxel features to the vertex
+        # TODO: space... look into 'learned neighborhood sampling' mentioned in paper
         features = F.grid_sample(
             voxel_output['features'],
             grid,
@@ -156,6 +159,6 @@ class MeshDecoder(nn.Module):
 
 
     def faces_to_edges(self, faces):
-        # we need to convert the faces into edges (like in original voxel2mesh code)
+        # we need to convert the faces into edges
         edges = torch.cat([faces[:, :2], faces[:, 1:], faces[:, [0, 2]]], dim=0)
-        return edges.unique(dim=0).t().contiguous()  # [2, E]
+        return edges.unique(dim=0).t().contiguous()

@@ -35,25 +35,26 @@ class Voxel2Mesh(nn.Module):
         mesh_outputs = []
 
         for c in self.mesh_classes:
-            # Use class-specific features for each mesh decoder
+            # use class-specific features for each pass thru mesh decoder
             class_specific_output = {
                 'features': voxel_output['class_features'][c],
                 'segmentation': voxel_output['segmentation']
             }
             mesh_outputs.append(self.mesh_decoders[c](class_specific_output))
 
+
+        # the slices to pop up when running model, just useful to see if it's converging or not
         visualize_slice(
             input_vol=data['x'],
             label_vol=data['y_voxels'],
             pred_vol=voxel_output['segmentation'],
             slice_idx=15
         )
-
         visualize_slice(
             input_vol=data['x'],
             label_vol=data['y_voxels'],
             pred_vol=voxel_output['segmentation'],
-            slice_idx=22
+            slice_idx=24
         )
 
         # debugging
@@ -72,22 +73,96 @@ class Voxel2Mesh(nn.Module):
             'segmentation': voxel_output['segmentation']
         }
 
-    def loss(self, data):
+    # def loss(self, data):
+    #     """
+    #     Computes the total loss for Voxel2Mesh using weighted combination of loss functions.
+    #     These are the two main ones from the paper:
+    #         1. Cross-Entropy Loss: computed between predicted voxels & labels
+    #         2. Chamfer Loss: computed between predicted mesh & marching cubes from labels
+    #     """
+    #
+    #     # get predictions from model
+    #     # pred is a dict:
+    #     # pred['segmentation'] is the segmentation output from voxel decoder
+    #     # pred['mesh'] is the deformed mesh output from the mesh decoder
+    #     pred = self.forward(data)
+    #     faces = self.template_mesh.get_faces().to(data['x'].device)
+    #
+    #     # cross-entropy loss
+    #     ce_loss = cross_entropy_loss(
+    #         pred['segmentation'],
+    #         data['y_voxels'].float()
+    #     ) / self.config.num_classes
+    #
+    #     dsc_loss = dice_loss(
+    #         pred['segmentation'],
+    #         data['y_voxels'].float()
+    #     )
+    #
+    #     # mesh losses
+    #     chamfer_loss_total, edge_loss_total, lap_loss_total, normal_loss_total = 0, 0, 0, 0
+    #
+    #     for c, mesh_idx in enumerate(self.mesh_classes):
+    #         # extract surface from ground truth for class c
+    #         mesh_pred = pred["meshes"][mesh_idx]
+    #
+    #         # extract target mesh for this chamber
+    #         target_mesh = extract_surface_points(pred["segmentation"][:, c].cpu().detach().numpy())
+    #
+    #         chamfer_loss = chamfer_distance(mesh_pred, target_mesh)
+    #         edge_loss = mesh_edge_loss(mesh_pred, faces)
+    #         lap_loss = laplacian_smoothing(mesh_pred, faces)
+    #         normal_loss = normal_consistency_loss(mesh_pred, faces)
+    #
+    #         chamfer_loss_total += chamfer_loss
+    #         edge_loss_total += edge_loss
+    #         lap_loss_total += lap_loss
+    #         normal_loss_total += normal_loss
+    #
+    #     l1, l2, l3, l4, l5, l6 = 2.5, 0.25, 1.0, 0.1, 2.5, 2.5
+    #     total_loss = (
+    #             l1 * ce_loss / self.config.num_classes +
+    #             l2 * dsc_loss +
+    #             l3 * chamfer_loss_total / self.config.num_mesh_classes +
+    #             l4 * edge_loss_total / self.config.num_mesh_classes +
+    #             l5 * lap_loss_total / self.config.num_mesh_classes +
+    #             l6 * normal_loss_total / self.config.num_mesh_classes
+    #     )
+    #
+    #     log = {
+    #         "ce_loss": (ce_loss * l1 / self.config.num_classes).item(),
+    #         "dice_loss": (dsc_loss * l2).item(),
+    #         "chamfer_loss": (chamfer_loss_total * l3 / self.config.num_mesh_classes).item(),
+    #         "edge_loss": (edge_loss_total * l4 / self.config.num_mesh_classes).item(),
+    #         "laplacian_loss": (lap_loss_total * l5 / self.config.num_mesh_classes).item(),
+    #         "normal_loss": (normal_loss_total * l6 / self.config.num_mesh_classes).item()
+    #     }
+    #     return total_loss, log
+    def loss(self, data, loss_weights=None, epoch=0):
         """
-        Computes the total loss for Voxel2Mesh using weighted combination of loss functions.
-        These are the two main ones from the paper:
-            1. Cross-Entropy Loss: computed between predicted voxels & labels
-            2. Chamfer Loss: computed between predicted mesh & marching cubes from labels
+        Computes the total loss w/ progressive weighting
+
+        :param data: input data dict
+        :param loss_weights: dict of weights for loss function
+        :param epoch: current epoch
         """
 
-        # get predictions from model
-        # pred is a dict:
-        # pred['segmentation'] is the segmentation output from voxel decoder
-        # pred['mesh'] is the deformed mesh output from the mesh decoder
+        # get predictions
         pred = self.forward(data)
         faces = self.template_mesh.get_faces().to(data['x'].device)
 
-        # cross-entropy loss
+        # default weights if not provided
+        if loss_weights is None:
+            loss_weights = {
+                'ce_weight': 0.5,
+                'dice_weight': 0.75,
+                'chamfer_weight': 1.2,
+                'edge_weight': 0.1,
+                'lap_weight': 1.5,
+                'normal_weight': 1.5
+            }
+
+        # always compute segmentation losses
         ce_loss = cross_entropy_loss(
             pred['segmentation'],
             data['y_voxels'].float()
@@ -98,43 +173,76 @@ class Voxel2Mesh(nn.Module):
             data['y_voxels'].float()
         )
 
-        # mesh losses
-        chamfer_loss_total, edge_loss_total, lap_loss_total, normal_loss_total = 0, 0, 0, 0
+        # initialize mesh losses
+        chamfer_loss_total = 0
+        edge_loss_total = 0
+        lap_loss_total = 0
+        normal_loss_total = 0
 
-        for c, mesh_idx in enumerate(self.mesh_classes):
-            # extract surface from ground truth for class c
-            mesh_pred = pred["meshes"][mesh_idx]
+        # only compute mesh losses if weights are non-zero.. just saves time for warmup epochs
+        if loss_weights['chamfer_weight'] > 0 or loss_weights['edge_weight'] > 0:
+            for c, mesh_pred in enumerate(pred["meshes"]):
+                # get target mesh
+                target_mesh = extract_surface_points(
+                    pred["segmentation"][:, c].cpu().detach().numpy()
+                )
+                target_mesh = target_mesh.to(data['x'].device)
 
-            # extract target mesh for this chamber
-            target_mesh = extract_surface_points(pred["segmentation"][:, c].cpu().detach().numpy())
+                # compute mesh losses if weights > 0
+                if loss_weights['chamfer_weight'] > 0:
+                    chamfer_loss = chamfer_distance(mesh_pred, target_mesh)
+                    chamfer_loss_total += chamfer_loss
 
-            chamfer_loss = chamfer_distance(mesh_pred, target_mesh)
-            edge_loss = mesh_edge_loss(mesh_pred, faces)
-            lap_loss = laplacian_smoothing(mesh_pred, faces)
-            normal_loss = normal_consistency_loss(mesh_pred, faces)
+                if loss_weights['edge_weight'] > 0:
+                    edge_loss = mesh_edge_loss(mesh_pred, faces)
+                    edge_loss_total += edge_loss
 
-            chamfer_loss_total += chamfer_loss
-            edge_loss_total += edge_loss
-            lap_loss_total += lap_loss
-            normal_loss_total += normal_loss
+                if loss_weights['lap_weight'] > 0:
+                    lap_loss = laplacian_smoothing(mesh_pred, faces)
+                    lap_loss_total += lap_loss
 
+                if loss_weights['normal_weight'] > 0:
+                    normal_loss = normal_consistency_loss(mesh_pred, faces)
+                    normal_loss_total += normal_loss
+
+            # average over num of mesh classes
+            num_mesh = len(pred["meshes"])
+            chamfer_loss_total = chamfer_loss_total / num_mesh
+            edge_loss_total = edge_loss_total / num_mesh
+            lap_loss_total = lap_loss_total / num_mesh
+            normal_loss_total = normal_loss_total / num_mesh
+
+        # apply weights
         total_loss = (
-                0.6 * ce_loss +
-                0.5 * dsc_loss +
-                1.2 * chamfer_loss_total / self.config.num_mesh_classes +
-                0.1 * edge_loss_total / self.config.num_mesh_classes +
-                1.5 * lap_loss_total / self.config.num_mesh_classes +
-                1.5 * normal_loss_total / self.config.num_mesh_classes
+                loss_weights['ce_weight'] * ce_loss +
+                loss_weights['dice_weight'] * dsc_loss +
+                loss_weights['chamfer_weight'] * chamfer_loss_total +
+                loss_weights['edge_weight'] * edge_loss_total +
+                loss_weights['lap_weight'] * lap_loss_total +
+                loss_weights['normal_weight'] * normal_loss_total
         )
 
-        log = {
-            "ce_loss": ce_loss.item(),
-            "dice_loss": dsc_loss.item(),
-            "chamfer_loss": chamfer_loss_total.item(),
-            "edge_loss": edge_loss_total.item(),
-            "laplacian_loss": lap_loss_total.item(),
-            "normal_loss": normal_loss_total.item()
-        }
+        if loss_weights['chamfer_weight'] == 0:
+            log = {
+                "ce_loss": ce_loss.item(),
+                "dice_loss": dsc_loss.item(),
+                "chamfer_loss": chamfer_loss_total,
+                "edge_loss": edge_loss_total,
+                "laplacian_loss": lap_loss_total,
+                "normal_loss": normal_loss_total,
+                "epoch": epoch
+            }
+        else:
+            log = {
+                "ce_loss": ce_loss.item(),
+                "dice_loss": dsc_loss.item(),
+                "chamfer_loss": chamfer_loss_total.item(),
+                "edge_loss": edge_loss_total.item(),
+                "laplacian_loss": lap_loss_total.item(),
+                "normal_loss": normal_loss_total.item(),
+                "epoch": epoch
+            }
+
         return total_loss, log
 
 
@@ -158,86 +266,84 @@ def visualize_slice(input_vol, label_vol, pred_vol, slice_idx=None, alpha=0.4):
         pred_vol = pred_vol.detach().cpu().numpy()
 
     b, _, z, y, x = input_vol.shape
-    input_vol = np.squeeze(input_vol)
-    label_vol = np.squeeze(label_vol)
-    pred_vol = np.squeeze(pred_vol)
 
     # if slice not specified, pick middle slice to display
     if slice_idx is None:
         slice_idx = z // 2
 
-    input_slice = input_vol[:, :, slice_idx]
-    label_slice = label_vol[:, :, :, slice_idx]
-    pred_slice = pred_vol[:, :, :, slice_idx]
+    for batch in range(0,b):
+        input_slice = np.squeeze(input_vol[batch, :, :, :, slice_idx])
+        label_slice = np.squeeze(label_vol[batch, :, :, :, slice_idx])
+        pred_slice = np.squeeze(pred_vol[batch, :, :, :, slice_idx])
 
-    label_mask = np.zeros(label_slice.shape[1:], dtype=np.int32)
-    label_mask[label_slice[0] > 0.5] = 1  # LV
-    label_mask[label_slice[1] > 0.5] = 2  # RV
-    label_mask[label_slice[2] > 0.5] = 3  # AORTA
-    label_mask[label_slice[3] > 0.5] = 4  # PT
-    label_mask[label_slice[4] > 0.5] = 5  # LA
-    label_mask[label_slice[5] > 0.5] = 6  # RA
-    label_mask[label_slice[6] > 0.5] = 7  # FAT
+        label_mask = np.zeros(label_slice.shape[1:], dtype=np.int32)
+        label_mask[label_slice[0] > 0.5] = 1  # LV
+        label_mask[label_slice[1] > 0.5] = 2  # RV
+        label_mask[label_slice[2] > 0.5] = 3  # AORTA
+        label_mask[label_slice[3] > 0.5] = 4  # PT
+        label_mask[label_slice[4] > 0.5] = 5  # LA
+        label_mask[label_slice[5] > 0.5] = 6  # RA
+        label_mask[label_slice[6] > 0.5] = 7  # FAT
 
-    if pred_slice.ndim == 3:
-        # Get class with maximum probability
-        max_probs = np.max(pred_slice, axis=0)
-        pred_mask = np.argmax(pred_slice, axis=0) + 1  # +1 because 0 is background
-        # Only assign class if max probability > 0.0
-        pred_mask[max_probs <= 0.0] = 0
-    else:
-        pred_mask = np.zeros(pred_slice.shape[1:], dtype=np.int32)
-        # Get class with highest probability for each pixel
-        for h in range(pred_slice.shape[1]):
-            for w in range(pred_slice.shape[2]):
-                class_probs = pred_slice[:, h, w]
-                max_class = np.argmax(class_probs)
-                if class_probs[max_class] > 0.0:
-                    pred_mask[h, w] = max_class + 1
-                else:
-                    pred_mask[h, w] = 0
+        if pred_slice.ndim == 3:
+            # Get class with maximum probability
+            max_probs = np.max(pred_slice, axis=0)
+            pred_mask = np.argmax(pred_slice, axis=0) + 1  # +1 because 0 is background
+            # only assign class if max probability > 0.0
+            pred_mask[max_probs <= 0.0] = 0
+        else:
+            pred_mask = np.zeros(pred_slice.shape[1:], dtype=np.int32)
+            # get class with highest probability for each pixel
+            for h in range(pred_slice.shape[1]):
+                for w in range(pred_slice.shape[2]):
+                    class_probs = pred_slice[:, h, w]
+                    max_class = np.argmax(class_probs)
+                    if class_probs[max_class] > 0.0:
+                        pred_mask[h, w] = max_class + 1
+                    else:
+                        pred_mask[h, w] = 0
 
-    # colormap
-    class_colors = {
-        0: (0.0, 0.0, 0.0),   # background
-        1: (0.6, 0.0, 0.8),   # LV
-        2: (0.0, 0.0, 1.0),   # RV
-        3: (1.0, 0.0, 1.0),   # AORTA
-        4: (0.01, 0.75, 0.0),   # PT
-        5: (1.0, 0.46, 0.09),  # LA
-        6: (0.15, 0.63, 0.68), # RA
-        7: (0.8, 0.8, 0.0),   # FAT
-    }
+        # colormap
+        class_colors = {
+            0: (0.0, 0.0, 0.0),   # background
+            1: (0.6, 0.0, 0.8),   # LV
+            2: (0.0, 0.0, 1.0),   # RV
+            3: (1.0, 0.0, 1.0),   # AORTA
+            4: (0.01, 0.75, 0.0),   # PT
+            5: (1.0, 0.46, 0.09),  # LA
+            6: (0.15, 0.63, 0.68), # RA
+            7: (0.8, 0.8, 0.0),   # FAT
+        }
 
-    # overlay colormap onto slice
-    def overlay_segmentation(mask, colors, alpha):
-        overlay = np.zeros((*mask.shape, 4))
-        for label, color in colors.items():
-            if label == 0:
-                continue
-            m = mask == label
-            overlay[m, :3] = color
-            overlay[m, 3] = alpha
-        return overlay
+        # overlay colormap onto slice
+        def overlay_segmentation(mask, colors, alpha):
+            overlay = np.zeros((*mask.shape, 4))
+            for label, color in colors.items():
+                if label == 0:
+                    continue
+                m = mask == label
+                overlay[m, :3] = color
+                overlay[m, 3] = alpha
+            return overlay
 
-    label_overlay = overlay_segmentation(label_mask, class_colors, alpha)
-    pred_overlay = overlay_segmentation(pred_mask, class_colors, alpha)
+        label_overlay = overlay_segmentation(label_mask, class_colors, alpha)
+        pred_overlay = overlay_segmentation(pred_mask, class_colors, alpha)
 
-    # plot using matplotlib
-    fig, ax = plt.subplots(1, 2, figsize=(8, 5))
-    ax[0].imshow(input_slice, cmap="gray")
-    ax[0].imshow(label_overlay)
-    ax[0].set_title("Ground Truth Labels")
+        # plot using matplotlib
+        fig, ax = plt.subplots(1, 2, figsize=(8, 5))
+        ax[0].imshow(input_slice, cmap="gray")
+        ax[0].imshow(label_overlay)
+        ax[0].set_title("Ground Truth Labels")
 
-    ax[1].imshow(input_slice, cmap="gray")
-    ax[1].imshow(pred_overlay)
-    ax[1].set_title("Predicted Segmentation")
+        ax[1].imshow(input_slice, cmap="gray")
+        ax[1].imshow(pred_overlay)
+        ax[1].set_title("Predicted Segmentation")
 
-    for a in ax:
-        a.axis("off")
+        for a in ax:
+            a.axis("off")
 
-    plt.tight_layout()
-    plt.show()
+        plt.tight_layout()
+        plt.show()
 
 
 def visualize_meshes(meshes, faces, titles=None):
@@ -268,3 +374,33 @@ def visualize_meshes(meshes, faces, titles=None):
 
     plotter.show()
 
+
+def get_loss_weights(epoch, total_epochs, warmup_epochs=50):
+    """
+    Progressive loss weighting strategy
+    - 1st phase (epoch < warmup_epochs): only segmentation losses
+    - 2nd phase: gradually introduce mesh losses
+    """
+    if epoch < warmup_epochs:
+        # Phase 1: Only segmentation losses
+        return {
+            'ce_weight': 2.5,
+            'dice_weight': 0.5,
+            'chamfer_weight': 0.0,
+            'edge_weight': 0.0,
+            'lap_weight': 0.0,
+            'normal_weight': 0.0
+        }
+    else:
+        # Phase 2: Gradually increase mesh losses
+        progress = (epoch - warmup_epochs) / (total_epochs - warmup_epochs)
+        ramp = 1.0 / (1.0 + np.exp(-10 * (progress - 0.5)))
+
+        return {
+            'ce_weight': 2.5,
+            'dice_weight': 0.5,
+            'chamfer_weight': 1.0 * ramp,
+            'edge_weight': 0.1 * ramp,
+            'lap_weight': 2.5 * ramp,
+            'normal_weight': 2.5 * ramp
+        }

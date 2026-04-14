@@ -18,7 +18,6 @@ def chamfer_distance(pred_points, target_points):
     """
 
     # compute distances from each point in predicted pts to target pts
-    # distances = torch.cdist(pred_points.to(DEVICE), target_points.to(DEVICE), p=2)
     distances = torch.cdist(pred_points.to(DEVICE), target_points.to(DEVICE))
 
     # find nearest neighbor distances
@@ -102,28 +101,23 @@ def cross_entropy_loss(pred_voxels, target_voxels):
     target = target_voxels.float().to(DEVICE)
     pred_voxels = pred_voxels.to(DEVICE)
 
-    # # class weights
-    # class_weights = torch.tensor([20.0, 20.0], device=DEVICE)
-    #
-    # return F.cross_entropy(pred_voxels, target, reduction="mean", weight=class_weights)
-
     ce_loss = 0
     for c in range(config.num_classes):
         if c == 0:
-            pos_weight = torch.tensor([1.5], device=DEVICE)
+            pos_weight = torch.tensor([1.6], device=DEVICE)
         elif c == 2:
-            pos_weight = torch.tensor([4.0], device=DEVICE)
+            pos_weight = torch.tensor([2.5], device=DEVICE)
         elif c == 3:
-            pos_weight = torch.tensor([4.0], device=DEVICE)
+            pos_weight = torch.tensor([2.5], device=DEVICE)
         elif c == 4:
             pos_weight = torch.tensor([4.0], device=DEVICE)
         elif c == 5:
-            pos_weight = torch.tensor([6.0], device=DEVICE)
+            pos_weight = torch.tensor([2.25], device=DEVICE)
         elif c == 6:
             pos_weight = torch.tensor([2.0], device=DEVICE)
         else:
-            pos_weight = torch.tensor([1.2], device=DEVICE)
-    #     pos_weight = torch.tensor([1.0], device=DEVICE)
+            pos_weight = torch.tensor([1.6], device=DEVICE)
+        # pos_weight = torch.tensor([1.0], device=DEVICE)
         ce_loss += F.binary_cross_entropy_with_logits(pred_voxels[:, c], target[:, c], pos_weight=pos_weight)
 
     return ce_loss
@@ -144,6 +138,7 @@ def dice_loss(pred, target, smooth=1e-6):
     dice = (2. * intersection + smooth) / (union + smooth)
     return 1 - dice.mean(dim=1)
 
+
 def normal_consistency_loss(vertices, faces):
     """
     Normals from each face, compare angles
@@ -151,7 +146,7 @@ def normal_consistency_loss(vertices, faces):
     vertices = vertices.to(DEVICE).squeeze(0)
     faces = faces.to(DEVICE)
 
-    # Compute face normals
+    # compute normals from each face
     v0, v1, v2 = vertices[faces].unbind(1)
     face_normals = torch.cross(v1 - v0, v2 - v0, dim=1)
     face_normals = torch.nn.functional.normalize(face_normals, dim=1, eps=1e-8)
@@ -166,7 +161,7 @@ def normal_consistency_loss(vertices, faces):
     edges = edges.reshape(-1, 2)
     edges_sorted, _ = torch.sort(edges, dim=1)
 
-    # Sort edges, get rid of duplicates
+    # sort edges, get rid of duplicates
     edges_sorted, sort_idx = torch.sort(edges_sorted, dim=0)
     unique_edges, inverse_idx, counts = torch.unique(
         edges_sorted,

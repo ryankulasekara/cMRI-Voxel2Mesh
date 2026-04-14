@@ -31,3 +31,4 @@ class VoxelEncoder(nn.Module):
                 x = torch.clamp(x, -1e2, 1e2)
                 down_outputs.append(x)
             return down_outputs
+
