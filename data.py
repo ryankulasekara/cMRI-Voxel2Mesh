@@ -1,17 +1,20 @@
 import os
 import numpy as np
+import mcubes
 import torch
 import pyvista as pv
 import SimpleITK as sitk
 from scipy.ndimage import zoom
 import skimage.measure
 
+import config
 from config import *
 from model.mesh_utils import normalize_points
+from model.template_mesh import TemplateMesh
 
 
-# helper to match nrrd dimensions order that sitk pulls
-TARGET_SHAPE_ZYX = (NRRD_DIMENSIONS[2], NRRD_DIMENSIONS[1], NRRD_DIMENSIONS[0])
+# helper to match nrrd dimensions order... sitk has weird ordering
+TARGET_SHAPE_ZYX = (NRRD_DIMENSIONS[2], NRRD_DIMENSIONS[1], NRRD_DIMENSIONS[0], NRRD_DIMENSIONS[3])
 
 def reorient_to_identity(sitk_img, orientation="LPS"):
     """
@@ -21,6 +24,7 @@ def reorient_to_identity(sitk_img, orientation="LPS"):
     :param orientation: default orientation
     :return: reoriented segmentation
     """
+
     orient_filter = sitk.DICOMOrientImageFilter()
     orient_filter.SetDesiredCoordinateOrientation(orientation)
     return orient_filter.Execute(sitk_img)
@@ -47,7 +51,7 @@ def load_images(file_path):
         img_np = sitk.GetArrayFromImage(image_sitk)  # remember that np array is in (z,y,x) order from the sitk image
 
         # pad/crop to target shape
-        img_np = np.transpose(pad_to_size(img_np, TARGET_SHAPE_ZYX, pad_value=0))
+        img_np = np.transpose(pad_to_size(img_np, TARGET_SHAPE_ZYX[0:3], pad_value=0))
 
         # z-score normalize voxel intensities
         mean, std = np.mean(img_np), np.std(img_np)
@@ -89,18 +93,29 @@ def load_labels(file_path, headers):
         # convert to np array (still in (z,y,x) order)
         seg_np = sitk.GetArrayFromImage(seg_resampled)
 
-        # get the correct label depending on the desired cardiac structure (SEG_LABEL)
+        # get the correct labels depending on the desired cardiac structure (SEG_LABEL)
         if seg_np.ndim == 4:
-            seg_np = seg_np[..., SEG_LABEL]
+            seg_fat = seg_np[..., 1]
+            seg_aorta = seg_np[..., 5]
+            seg_pt = seg_np[..., 6]
+            seg_la = seg_np[..., 7]
+            seg_ra = seg_np[..., 8]
+            seg_np = seg_np[..., 3:5]
 
-        # flip axes to be in (x,y,z) such that the labels align properly
-        seg_np = np.transpose(pad_to_size(seg_np, TARGET_SHAPE_ZYX, pad_value=0))
+            seg_np = np.concatenate((seg_np, seg_aorta[..., np.newaxis]), axis=-1)
+            seg_np = np.concatenate((seg_np, seg_pt[..., np.newaxis]),axis=-1)
+            seg_np = np.concatenate((seg_np, seg_la[..., np.newaxis]),axis=-1)
+            seg_np = np.concatenate((seg_np, seg_ra[..., np.newaxis]),axis=-1)
+            seg_np = np.concatenate((seg_np, seg_fat[..., np.newaxis]),axis=-1)
+
+        # flip axes to be in (x,y,z) so that the labels align properly
+        seg_np = np.transpose(pad_to_size(seg_np, TARGET_SHAPE_ZYX, pad_value=0, label=True))
         labels.append(np.flipud(np.rot90(seg_np)))
 
     return np.array(labels)
 
 
-def pad_to_size(volume, target_shape_zyx, pad_value=0):
+def pad_to_size(volume, target_shape_zyx, pad_value=0, label=False):
     """
     Zero-pad or crop MRI volume to the desired target shape
 
@@ -118,12 +133,17 @@ def pad_to_size(volume, target_shape_zyx, pad_value=0):
     # we want the center to be in the same spot (pad around all edges, not just extending outwards right & down)
     pad_before = np.maximum((target_shape - current_shape) // 2, 0)
     pad_after = np.maximum(target_shape - current_shape - pad_before, 0)
-    volume = np.pad(volume, [(pad_before[d], pad_after[d]) for d in range(3)], mode="constant", constant_values=pad_value)
+    if label:
+        rng = range(4)
+        volume = np.pad(volume, [(pad_before[d], pad_after[d]) for d in rng], mode="constant", constant_values=pad_value)
+    else:
+        rng = range(3)
+        volume = np.pad(volume, [(pad_before[d], pad_after[d]) for d in rng], mode="constant",constant_values=pad_value)
     current_shape = np.array(volume.shape)
 
     # cropping while keeping foreground
     crop_slices = []
-    for d in range(3):
+    for d in rng:
         if current_shape[d] > target_shape[d]:
             # find indices of nonzero along axis d
             nonzero_idx = np.where(volume != 0)
@@ -131,7 +151,8 @@ def pad_to_size(volume, target_shape_zyx, pad_value=0):
                 # compute min/max along axis d
                 min_idx = nonzero_idx[d].min()
                 max_idx = nonzero_idx[d].max()
-                # Ensure crop window contains foreground and fits target
+
+                # make sure crop window contains foreground and fits target
                 start = max(0, min(min_idx, current_shape[d] - target_shape[d]))
                 end = start + target_shape[d]
             else:
@@ -148,31 +169,33 @@ def pad_to_size(volume, target_shape_zyx, pad_value=0):
 
 def extract_surface_points(voxel_data, threshold=0.5, num_points=NUM_POINTS, spacing=(1.92308, 1.92308, 9.99985)):
     """
-    Extracts outer surface points from a labeled voxel volume using marching cubes,
-    resampling to isotropic spacing first so that the surface isn't limited to slice planes.
+    Get marching cubes mesh from segmentations for each chamber
 
-    :param voxel_data: array of segmentation/labeled volumes
-    :param threshold: should be 0.5 (might need to change if adding multiple labels)
-    :param num_points: number of points to extract
+    :param voxel_data: segmentation volume
+    :param threshold: level to decide between 1 or 0 for each chamber
+    :param num_points: number of points to sample from marching cubes mesh
     :param spacing: spacing between points in x,y,z directions
-    :return: array of extracted surface points
     """
-
-    # convert to tensor - we want to use the GPU for this since it can take while if not
+    # convert to tensor if not already
     if isinstance(voxel_data, np.ndarray):
         voxel_data = torch.tensor(voxel_data, dtype=torch.float32).to(DEVICE)
 
-    # get batch size (getting surface pts from each individual volume)
-    B = voxel_data.shape[0]
+    # dimensions
+    C, D, H, W = voxel_data.shape
+
+    # only important if batch size isn't 1
     all_points = []
 
-    for b in range(B):
-        if voxel_data.ndim == 5:  # (B, C, D, H, W)
-            volume = voxel_data[b, 0].cpu().numpy()
-        elif voxel_data.ndim == 4:  # (B, D, H, W)
-            volume = voxel_data[b].cpu().numpy()
-        else:
-            raise ValueError(f"Unexpected voxel_data shape: {voxel_data.shape}")
+    # list of pts for each chamber
+    chamber_points = []
+    for c in range(C):
+        volume = voxel_data[c].cpu().numpy()
+
+        if volume.sum() == 0:
+            # empty list of pts
+            empty_verts = np.zeros((num_points, 3))
+            all_points.append(empty_verts)
+            continue
 
         # resample to isotropic spacing
         # smallest spacing as target (1.9 mm)
@@ -180,12 +203,16 @@ def extract_surface_points(voxel_data, threshold=0.5, num_points=NUM_POINTS, spa
         zoom_factors = [s / target_spacing for s in spacing]
         volume_iso = zoom(volume, zoom=zoom_factors, order=0)
 
-        # ensure binary
-        volume_iso = (volume_iso > threshold).astype(np.uint8)
-
         # marching cubes, then scale using correct spacing
-        verts, faces, _, _ = skimage.measure.marching_cubes(volume_iso, level=0.5)
-        verts *= target_spacing
+        try:
+            verts, faces, _, _ = skimage.measure.marching_cubes(volume, level=0.0)
+            # verts *= target_spacing
+        except:
+            try:
+                verts, faces, _, _ = skimage.measure.marching_cubes(volume, level=-0.5)
+                print("No segmentation for chamber", c)
+            except:
+                verts, faces, _, _ = skimage.measure.marching_cubes(volume, level=-1.0)
 
         # sample pts to be num_points
         # if extracted pts is greater than num_points
@@ -201,7 +228,38 @@ def extract_surface_points(voxel_data, threshold=0.5, num_points=NUM_POINTS, spa
         verts = torch.tensor(verts, dtype=torch.float32).unsqueeze(0)
 
         # normalize points to be between -1 and 1 (get in same coordinate space as template mesh values)
-        verts = normalize_points(verts)
-        all_points.append(verts)
+        verts = map_coordinates(verts[0])
+        all_points.append(torch.tensor(verts))
+
+        # debugging
+        # pv_mesh = pv.PolyData(verts)
+        # plotter = pv.Plotter()
+        # plotter.add_mesh(pv_mesh, color="red", opacity=0.8)
+        # template_mesh = TemplateMesh()
+        # template_verts = template_mesh.get_vertices()
+        # pv_template = pv.PolyData(template_verts.cpu().numpy())
+        # plotter.add_mesh(pv_template, color="blue", opacity=0.8)
+        # plotter.show()
+
 
     return torch.cat(all_points, dim=0)
+
+
+def map_coordinates(vertices):
+
+    # this is the mri 'grid' of voxels in each dimension
+    grid_x, grid_y, grid_z = 96, 96, 32
+
+    # empty array w/ same dimensions as vertices
+    vertices_norm = np.zeros_like(vertices)
+
+    # map each point on [96,96,32] grid to a point in [(-1,1),(-1,1),(-1,1)] grid
+    # this is super important... makes sure marching cubes meshes are in the same space as the MRI
+    # therefore, different chambers will still have the same orientation with each other
+    vertices_norm[:, 0] = 2.0 * (vertices[:, 0] / (grid_x - 1)) - 1.0  # x: [0,95] -> [-1,1]
+    vertices_norm[:, 1] = 2.0 * (vertices[:, 1] / (grid_y - 1)) - 1.0  # y: [0,95] -> [-1,1]
+    vertices_norm[:, 2] = 2.0 * (vertices[:, 2] / (grid_z - 1)) - 1.0  # z: [0,31] -> [-1,1]
+
+    return vertices_norm
+
+

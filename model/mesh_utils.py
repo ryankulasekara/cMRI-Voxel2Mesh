@@ -3,29 +3,25 @@ import torch
 
 
 class UNetLayer(nn.Module):
-    def __init__(self, in_channels, out_channels, ndims=3, norm="instance"):
+    def __init__(self, in_channels, out_channels, ndims=3):
         super().__init__()
 
         if ndims == 3:
             Conv = nn.Conv3d
-            Norm = nn.InstanceNorm3d if norm == "instance" else nn.GroupNorm
+            Norm = nn.InstanceNorm3d
         else:
             Conv = nn.Conv2d
-            Norm = nn.InstanceNorm2d if norm == "instance" else nn.GroupNorm
+            Norm = nn.InstanceNorm2d
 
         self.conv1 = Conv(in_channels, out_channels, kernel_size=3, padding=1)
         self.conv2 = Conv(out_channels, out_channels, kernel_size=3, padding=1)
 
-        if norm == "group":
-            self.norm1 = Norm(num_groups=8, num_channels=out_channels)
-            self.norm2 = Norm(num_groups=8, num_channels=out_channels)
-        else:  # instance norm
-            self.norm1 = Norm(out_channels)
-            self.norm2 = Norm(out_channels)
+        self.norm1 = Norm(out_channels)
+        self.norm2 = Norm(out_channels)
 
         self.activation = nn.ReLU(inplace=True)
 
-        # Initialize weights
+        # initialize weights
         nn.init.kaiming_normal_(self.conv1.weight, mode='fan_out', nonlinearity='relu')
         nn.init.kaiming_normal_(self.conv2.weight, mode='fan_out', nonlinearity='relu')
         nn.init.zeros_(self.conv1.bias)
