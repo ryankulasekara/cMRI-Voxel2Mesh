@@ -15,6 +15,7 @@ class MeshDecoder(nn.Module):
         self.config = config
         self.chamber = chamber
         self.template_mesh = TemplateMesh()
+        self.num_refinement_steps = 3
 
         # vertex encoder... maybe change this in the future?
         # seems like the easiest way to correlate features & coordinates
@@ -54,47 +55,51 @@ class MeshDecoder(nn.Module):
         # residual connection for template mesh
         self.residual_factor = nn.Parameter(torch.tensor(0.1))
 
+        # scale factor for each step... want finer details at each step
+        self.step_scales = nn.Parameter(torch.tensor([0.4, 0.3, 0.2]))
+
     def forward(self, voxel_output):
-        # get feature vector from voxel decoder
         features = voxel_output['features']
 
         # get template mesh
-        vertices = self.template_mesh.get_vertices().to(features.device)
+        template_verts = self.template_mesh.get_vertices().to(features.device)
         faces = self.template_mesh.get_faces().to(features.device)
         B = features.shape[0]
 
-        # sample features w proper coordinate mapping
-        vertex_features = self.sample_voxel_features(voxel_output, vertices)
+        # initialize verts & edges
+        current_vertices = template_verts.unsqueeze(0).expand(B, -1, -1)
         edge_index = self.faces_to_edges(faces)
-        vertex_coords = vertices.unsqueeze(0).expand(B, -1, -1)
 
-        # concatenate coordinates and features into single feature vector
-        x = torch.cat([vertex_coords, vertex_features], dim=-1)
-        x = self.vertex_encoder(x)
+        # multiple steps
+        for step in range(self.num_refinement_steps):
+            # sample features at each vertex location
+            vertex_features = self.sample_voxel_features(voxel_output, current_vertices)
 
-        # GCN w residual connections
-        displacements = []
-        for i in range(B):
-            xi = x[i]
+            # concatenate feature vector w/ coords
+            x = torch.cat([current_vertices, vertex_features], dim=-1)
+            x = self.vertex_encoder(x)
 
             # GCN layers
-            xi1 = F.relu(self.conv1(xi, edge_index))
-            xi2 = F.relu(self.conv2(xi1, edge_index))
-            xi3 = F.relu(self.conv3(xi2, edge_index))
-            xi4 = F.relu(self.conv4(xi3, edge_index))
-            xi5 = F.relu(self.conv5(xi4, edge_index))
-            xi6 = F.relu(self.conv6(xi5, edge_index))
+            displacements = []
+            for i in range(B):
+                xi = x[i]
+                xi1 = F.relu(self.conv1(xi, edge_index))
+                xi2 = F.relu(self.conv2(xi1, edge_index))
+                xi3 = F.relu(self.conv3(xi2, edge_index))
+                xi4 = F.relu(self.conv4(xi3, edge_index))
+                xi5 = F.relu(self.conv5(xi4, edge_index))
+                xi6 = F.relu(self.conv6(xi5, edge_index))
+                displacements.append(self.displacement_head(xi6))
 
-            displacements.append(self.displacement_head(xi6))
+            # get displacements... if nan, change to 0 for stability
+            displacements = torch.stack(displacements)
+            displacements = torch.nan_to_num(displacements, nan=0.0)
 
-        # get displacements... if nan, change to 0 for stability
-        displacements = torch.stack(displacements)
-        displacements = torch.nan_to_num(displacements, nan=0.0)
+            # update verts
+            step_scale = self.step_scales[step]
+            current_vertices = current_vertices + step_scale * torch.clamp(displacements, -1.0, 1.0)
 
-        # apply displacements to template mesh vertices
-        deformed_vertices = vertices + torch.clamp(displacements, -2.5, 2.5)
-
-        return deformed_vertices
+        return current_vertices
 
     def sample_voxel_features(self, voxel_output, vertices):
         """
