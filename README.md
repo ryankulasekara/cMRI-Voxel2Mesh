@@ -35,8 +35,10 @@ some are structured differently, such that my model can't run them.  The followi
 - MF0518-ED, ES
 - MF0519-ED, ES
 
-Hopefully we can add to this list as the gradient echos are traced or if we redo some of the other scans :)
-
+Hopefully we can add to this list as the gradient echos are traced or if we redo some of the other scans :)                     
+       -> train  -> images, labels    
+data --
+       -> test   -> images, labels
 ### - Warmup Epochs 
 The variable 'warmup_epochs' in main.py is the number of epochs that will be run ONLY on segmentation... this is key since 
 we want the segmentations to be decent before we start trying to deform the template mesh.  If warmup_epochs is too small, 
