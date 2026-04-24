@@ -3,7 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.cuda.amp import autocast
 import numpy as np
-import gc
 
 from model.mesh_utils import normalize_points
 from config import *
