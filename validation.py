@@ -719,7 +719,7 @@ def main():
             # visualize slices with DSC scores in title
             visualize_segmentation_slices(
                 images[0], labels[0], pred_seg[0],
-                slice_indices=(13, 15, 22, 24),
+                slice_indices=(10, 13, 15, 17, 22, 24),
                 dsc_scores=dsc_scores
             )
 

@@ -104,11 +104,11 @@ def cross_entropy_loss(pred_voxels, target_voxels):
     ce_loss = 0
     for c in range(config.num_classes):
         if c == 0:
-            pos_weight = torch.tensor([1.6], device=DEVICE)
+            pos_weight = torch.tensor([1.8], device=DEVICE)
         elif c == 2:
-            pos_weight = torch.tensor([2.5], device=DEVICE)
+            pos_weight = torch.tensor([3.0], device=DEVICE)
         elif c == 3:
-            pos_weight = torch.tensor([2.5], device=DEVICE)
+            pos_weight = torch.tensor([4.0], device=DEVICE)
         elif c == 4:
             pos_weight = torch.tensor([4.0], device=DEVICE)
         elif c == 5:
@@ -116,7 +116,7 @@ def cross_entropy_loss(pred_voxels, target_voxels):
         elif c == 6:
             pos_weight = torch.tensor([2.0], device=DEVICE)
         else:
-            pos_weight = torch.tensor([1.6], device=DEVICE)
+            pos_weight = torch.tensor([2.0], device=DEVICE)
         # pos_weight = torch.tensor([1.0], device=DEVICE)
         ce_loss += F.binary_cross_entropy_with_logits(pred_voxels[:, c], target[:, c], pos_weight=pos_weight)
 

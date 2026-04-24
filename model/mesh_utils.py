@@ -3,7 +3,7 @@ import torch
 
 
 class UNetLayer(nn.Module):
-    def __init__(self, in_channels, out_channels, ndims=3):
+    def __init__(self, in_channels, out_channels, ndims=3, dropout_rate=0.05):
         super().__init__()
 
         if ndims == 3:
@@ -18,6 +18,8 @@ class UNetLayer(nn.Module):
 
         self.norm1 = Norm(out_channels)
         self.norm2 = Norm(out_channels)
+
+        self.dropout = nn.Dropout3d(dropout_rate)
 
         self.activation = nn.ReLU(inplace=True)
 

@@ -45,17 +45,17 @@ val_loader = DataLoader(val_dataset, batch_size=config.batch_size, shuffle=False
 # initialize model, optimizer, & scheduler
 model = Voxel2Mesh(config).to(device)
 optimizer = optim.Adam(model.parameters(), lr=1e-4)
-scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=50)
+scheduler = ReduceLROnPlateau(optimizer, factor=0.5, patience=100)
 
 # training loop parameters
 train_losses = []
 val_losses = []
 
 # number of epochs to only do segmentation (before training mesh)
-warmup_epochs = 2
+warmup_epochs = 500
 
 # total epochs
-num_epochs = 250
+num_epochs = 700
 
 # training loop
 start_time = time.time()
@@ -71,7 +71,8 @@ for epoch in range(num_epochs):
     # train w/ training DataLoader
     for images, labels in train_loader:
         images, labels = images.to(device), labels.to(device)
-        images, labels = augmenter(images, labels)
+        if epoch <= warmup_epochs:
+            images, labels = augmenter(images, labels)
 
         optimizer.zero_grad()
         # was running out of memory on gpu so doing this w/ autocast

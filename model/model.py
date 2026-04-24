@@ -73,71 +73,6 @@ class Voxel2Mesh(nn.Module):
             'segmentation': voxel_output['segmentation']
         }
 
-    # def loss(self, data):
-    #     """
-    #     Computes the total loss for Voxel2Mesh using weighted combination of loss functions.
-    #     These are the two main ones from the paper:
-    #         1. Cross-Entropy Loss: computed between predicted voxels & labels
-    #         2. Chamfer Loss: computed between predicted mesh & marching cubes from labels
-    #     """
-    #
-    #     # get predictions from model
-    #     # pred is a dict:
-    #     # pred['segmentation'] is the segmentation output from voxel decoder
-    #     # pred['mesh'] is the deformed mesh output from the mesh decoder
-    #     pred = self.forward(data)
-    #     faces = self.template_mesh.get_faces().to(data['x'].device)
-    #
-    #     # cross-entropy loss
-    #     ce_loss = cross_entropy_loss(
-    #         pred['segmentation'],
-    #         data['y_voxels'].float()
-    #     ) / self.config.num_classes
-    #
-    #     dsc_loss = dice_loss(
-    #         pred['segmentation'],
-    #         data['y_voxels'].float()
-    #     )
-    #
-    #     # mesh losses
-    #     chamfer_loss_total, edge_loss_total, lap_loss_total, normal_loss_total = 0, 0, 0, 0
-    #
-    #     for c, mesh_idx in enumerate(self.mesh_classes):
-    #         # extract surface from ground truth for class c
-    #         mesh_pred = pred["meshes"][mesh_idx]
-    #
-    #         # extract target mesh for this chamber
-    #         target_mesh = extract_surface_points(pred["segmentation"][:, c].cpu().detach().numpy())
-    #
-    #         chamfer_loss = chamfer_distance(mesh_pred, target_mesh)
-    #         edge_loss = mesh_edge_loss(mesh_pred, faces)
-    #         lap_loss = laplacian_smoothing(mesh_pred, faces)
-    #         normal_loss = normal_consistency_loss(mesh_pred, faces)
-    #
-    #         chamfer_loss_total += chamfer_loss
-    #         edge_loss_total += edge_loss
-    #         lap_loss_total += lap_loss
-    #         normal_loss_total += normal_loss
-    #
-    #     l1, l2, l3, l4, l5, l6 = 2.5, 0.25, 1.0, 0.1, 2.5, 2.5
-    #     total_loss = (
-    #             l1 * ce_loss / self.config.num_classes +
-    #             l2 * dsc_loss +
-    #             l3 * chamfer_loss_total / self.config.num_mesh_classes +
-    #             l4 * edge_loss_total / self.config.num_mesh_classes +
-    #             l5 * lap_loss_total / self.config.num_mesh_classes +
-    #             l6 * normal_loss_total / self.config.num_mesh_classes
-    #     )
-    #
-    #     log = {
-    #         "ce_loss": (ce_loss * l1 / self.config.num_classes).item(),
-    #         "dice_loss": (dsc_loss * l2).item(),
-    #         "chamfer_loss": (chamfer_loss_total * l3 / self.config.num_mesh_classes).item(),
-    #         "edge_loss": (edge_loss_total * l4 / self.config.num_mesh_classes).item(),
-    #         "laplacian_loss": (lap_loss_total * l5 / self.config.num_mesh_classes).item(),
-    #         "normal_loss": (normal_loss_total * l6 / self.config.num_mesh_classes).item()
-    #     }
-    #     return total_loss, log
     def loss(self, data, loss_weights=None, epoch=0):
         """
         Computes the total loss w/ progressive weighting
@@ -385,7 +320,7 @@ def get_loss_weights(epoch, total_epochs, warmup_epochs=50):
         # Phase 1: Only segmentation losses
         return {
             'ce_weight': 2.5,
-            'dice_weight': 0.5,
+            'dice_weight': 0.0,
             'chamfer_weight': 0.0,
             'edge_weight': 0.0,
             'lap_weight': 0.0,
@@ -398,9 +333,9 @@ def get_loss_weights(epoch, total_epochs, warmup_epochs=50):
 
         return {
             'ce_weight': 2.5,
-            'dice_weight': 0.5,
+            'dice_weight': 0.0,
             'chamfer_weight': 1.0 * ramp,
             'edge_weight': 0.1 * ramp,
-            'lap_weight': 2.5 * ramp,
-            'normal_weight': 2.5 * ramp
+            'lap_weight': 2.0 * ramp,
+            'normal_weight': 2.0 * ramp
         }
