@@ -1,6 +1,5 @@
 import os
 import numpy as np
-import mcubes
 import torch
 import pyvista as pv
 import SimpleITK as sitk
